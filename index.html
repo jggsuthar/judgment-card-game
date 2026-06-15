@@ -5,23 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Judgment - Multiplayer Prediction Card Game</title>
   
-  <!-- Tailwind CSS for styling -->
+  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- React & React DOM via UMD (Guarantees zero version mismatch errors on mobile) -->
+  <!-- React & React DOM via UMD (Extremely reliable on older mobile browsers) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   
-  <!-- Babel Standalone to compile JSX directly in the mobile browser -->
+  <!-- Babel Standalone to compile React JSX on-the-fly -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  
-  <!-- Firebase Compat CDN (Highly robust, runs natively on any mobile browser) -->
+
+  <!-- Firebase CDN (Used exclusively inside Canvas preview mode) -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
 
   <style>
-    /* Styling optimization for mobile browsers */
     body {
       -webkit-tap-highlight-color: transparent;
       user-select: none;
@@ -42,49 +41,37 @@
 
   <div id="root"></div>
 
-  <!-- Game Code Block compiled on-the-fly -->
+  <!-- React Game Logic compiled directly in-browser -->
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
     // ==========================================
-    // 1. DUAL-MODE FIREBASE DYNAMIC SETUP
+    // 1. DUAL-ENGINE SYNCHRONIZATION DETECTOR
     // ==========================================
-    const defaultPublicSandboxConfig = {
-      apiKey: "AIzaSyAs7u4_Xz-g1L8Q9pT3wL2r8K5M4N3O2PY", 
-      authDomain: "judgment-game-canvas.firebaseapp.com",
-      projectId: "judgment-game-canvas",
-      storageBucket: "judgment-game-canvas.appspot.com",
-      messagingSenderId: "305191147572",
-      appId: "1:305191147572:web:945fe6df5014cc62a93901"
-    };
+    const isSandboxEnv = typeof __firebase_config !== 'undefined';
+    const KV_BASE_URL = 'https://kvdb.io/JudgmentGameProdv4Namespace_';
 
-    let firebaseConfig;
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-      firebaseConfig = JSON.parse(__firebase_config);
-    } else {
-      const customConfigStr = localStorage.getItem('judgment_custom_firebase_config');
-      if (customConfigStr) {
-        try {
-          firebaseConfig = JSON.parse(customConfigStr);
-        } catch(e) {
-          firebaseConfig = defaultPublicSandboxConfig;
-        }
-      } else {
-        firebaseConfig = defaultPublicSandboxConfig;
+    let db = null;
+    let auth = null;
+    let appId = 'judgment-mp-v4';
+
+    if (isSandboxEnv) {
+      try {
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const firebaseApp = firebase.initializeApp(firebaseConfig);
+        auth = firebase.auth();
+        db = firebase.firestore();
+        appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v4';
+      } catch (e) {
+        console.error("Firebase startup failed inside Canvas: ", e);
       }
     }
-
-    // Initialize Firebase Compat
-    const firebaseApp = firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    const db = firebase.firestore();
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v1';
 
     const SIR_ROTATION = ['♠', '♦', '♣', '♥'];
     const CARD_SUIT_NAMES = { '♠': 'Spades', '♦': 'Diamonds', '♣': 'Clubs', '♥': 'Hearts' };
 
     // ==========================================
-    // 2. CARD UTILITY & JUDGMENT ENGINE
+    // 2. GAME RULES ENGINE & MATH
     // ==========================================
     function createDeck(deckCount, jokerCount) {
       const suits = ['♠', '♦', '♣', '♥'];
@@ -119,7 +106,7 @@
       return weights[value] || 0;
     }
 
-    // Fixes the previous array-assignment bug (now correctly evaluates desk)
+    // "Last played card wins on tie" evaluation logic
     function calculateTrickWinner(desk, sirColor, leadSuit) {
       if (!desk || desk.length === 0) return null;
       let winningPlay = desk;
@@ -178,7 +165,6 @@
       return 'text-amber-400';
     };
 
-    // Helper to estimate card deck constraints for 2 to 6 players
     const getPeakDealtCards = (maxRound, blindRound) => {
       if (maxRound > 10) return maxRound + 2;
       if (maxRound === blindRound) return maxRound + 3;
@@ -186,7 +172,7 @@
     };
 
     // ==========================================
-    // 3. MAIN REACT APP COMPONENT
+    // 3. MAIN APP VIEWPORT CONTROLLER
     // ==========================================
     function App() {
       const [myId, setMyId] = useState('');
@@ -195,15 +181,13 @@
       const [roomState, setRoomState] = useState(null);
       const [toast, setToast] = useState(null);
       const [selectedCards, setSelectedCards] = useState([]);
-      const [showDbModal, setShowDbModal] = useState(false);
-      const [dbInput, setDbInput] = useState(JSON.stringify(firebaseConfig, null, 2));
 
       const showToast = (message, type = 'info') => {
         setToast({ message, type });
-        setTimeout(() => setToast(null), 3500);
+        setTimeout(() => setToast(null), 3000);
       };
 
-      // 1. Retrieve persistent identity and query room params
+      // Extract details on load
       useEffect(() => {
         let storedId = localStorage.getItem('judgment_user_id');
         if (!storedId) {
@@ -222,8 +206,9 @@
         if (savedNickname) setNickname(savedNickname);
       }, []);
 
-      // 2. Anonymous Auth Initialization before writing queries
+      // Anonymous Auth setup (Firestore Sandbox Mode only)
       useEffect(() => {
+        if (!isSandboxEnv) return;
         const initAuth = async () => {
           try {
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -232,59 +217,87 @@
               await auth.signInAnonymously();
             }
           } catch (err) {
-            console.error("Authentication setup failed:", err);
-            showToast("Sync Authentication server issue. Check custom DB Config.", "error");
+            console.error("Firebase auth issue: ", err);
           }
         };
         initAuth();
       }, []);
 
-      // 3. Document Sync Listener
+      // Real-time synchronization router (Firebase vs KVDB Polling)
       useEffect(() => {
         if (!roomId) return;
 
-        const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId);
-        const unsubscribe = roomRef.onSnapshot((docSnap) => {
-          if (docSnap.exists) {
-            const data = docSnap.data();
-            if (data && data.stateJson) {
-              try {
+        if (isSandboxEnv) {
+          // ENGINE A: FIRESTORE SYNC
+          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId);
+          const unsubscribe = roomRef.onSnapshot((docSnap) => {
+            if (docSnap.exists) {
+              const data = docSnap.data();
+              if (data && data.stateJson) {
                 setRoomState(JSON.parse(data.stateJson));
-              } catch (err) {
-                console.error("State parse error:", err);
               }
             }
-          } else {
-            setRoomState(null);
-          }
-        }, (error) => {
-          console.error("Firestore sync fail:", error);
-          showToast("Reconnecting table stream...", "info");
-        });
+          }, (err) => console.error("Firestore sync fail: ", err));
+          return () => unsubscribe();
+        } else {
+          // ENGINE B: KEYLESS KVDB SYNC POLLER
+          // Polls the room state every 1.5s for seamless multi-device updates on Vercel
+          const fetchState = async () => {
+            try {
+              const res = await fetch(`${KV_BASE_URL}${roomId}`);
+              if (res.ok) {
+                const text = await res.text();
+                if (text && text.trim()) {
+                  const data = JSON.parse(text);
+                  setRoomState(data);
+                }
+              }
+            } catch (e) {
+              console.warn("KV sync check issue: ", e);
+            }
+          };
 
-        return () => unsubscribe();
+          fetchState();
+          const interval = setInterval(fetchState, 1500);
+          return () => clearInterval(interval);
+        }
       }, [roomId]);
 
-      // Handle card reset transition selection states
+      // Reset selection when stage transitions
       useEffect(() => {
         setSelectedCards([]);
       }, [roomState?.status]);
 
+      // Broadcast changes helper
       const broadcastState = async (newState) => {
-        try {
-          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId || newState.id);
-          await roomRef.set({
-            stateJson: JSON.stringify(newState),
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-        } catch(err) {
-          console.error("Failed writing state:", err);
-          showToast("Write permission block or network loss.", "error");
+        // Optimistic UI: Update local state immediately so tap feels instantaneous
+        setRoomState(newState);
+
+        if (isSandboxEnv) {
+          try {
+            const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId || newState.id);
+            await roomRef.set({
+              stateJson: JSON.stringify(newState),
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+          } catch(err) {
+            console.error("Firestore save fail: ", err);
+          }
+        } else {
+          try {
+            await fetch(`${KV_BASE_URL}${roomId || newState.id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newState)
+            });
+          } catch (e) {
+            console.error("KVDB write fail: ", e);
+          }
         }
       };
 
       // ==========================================
-      // GAME MECHANICS
+      // GAME SYSTEM ACTIONS
       // ==========================================
       const createRoom = async () => {
         if (!nickname.trim()) {
@@ -328,12 +341,12 @@
         setRoomId(generatedId);
         window.history.pushState(null, '', `?room=${generatedId}`);
         await broadcastState(initialRoom);
-        showToast("Table Created! Copy the link to invite friends.", "success");
+        showToast("Table created! Share the link to invite friends.", "success");
       };
 
       const joinRoom = async (targetId) => {
         if (!nickname.trim()) {
-          showToast("Please enter your nickname first!", "error");
+          showToast("Please set your nickname first!", "error");
           return;
         }
         const cleanId = targetId.trim().toUpperCase();
@@ -342,22 +355,31 @@
         localStorage.setItem('judgment_nickname', nickname);
 
         try {
-          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(cleanId);
-          const docSnap = await roomRef.get();
+          let currentRoom = null;
+          if (isSandboxEnv) {
+            const docSnap = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(cleanId).get();
+            if (docSnap.exists) {
+              currentRoom = JSON.parse(docSnap.data().stateJson);
+            }
+          } else {
+            const res = await fetch(`${KV_BASE_URL}${cleanId}`);
+            if (res.ok) {
+              const text = await res.text();
+              currentRoom = JSON.parse(text);
+            }
+          }
 
-          if (!docSnap.exists) {
-            showToast("Table does not exist. Check code or database config.", "error");
+          if (!currentRoom) {
+            showToast("Table code does not exist. Confirm code or create table.", "error");
             return;
           }
 
-          const currentRoom = JSON.parse(docSnap.data().stateJson);
-          
           if (currentRoom.status !== 'LOBBY' && !currentRoom.players[myId]) {
-            showToast("This game has already started!", "error");
+            showToast("Game has already started!", "error");
             return;
           }
           if (Object.keys(currentRoom.players).length >= 6 && !currentRoom.players[myId]) {
-            showToast("This lobby is full (Max 6 players)!", "error");
+            showToast("Table lobby is full (Max 6 players)!", "error");
             return;
           }
 
@@ -389,10 +411,10 @@
           setRoomId(cleanId);
           window.history.pushState(null, '', `?room=${cleanId}`);
           await broadcastState(updatedRoom);
-          showToast("Joined Table successfully!", "success");
-        } catch(err) {
+          showToast("Joined table successfully!", "success");
+        } catch (err) {
           console.error(err);
-          showToast("Could not join table database.", "error");
+          showToast("Unable to reach table database.", "error");
         }
       };
 
@@ -405,18 +427,12 @@
             [key]: value
           }
         };
-        updateRoomStateDirect(updatedRoom);
-      };
-
-      const updateRoomStateDirect = (state) => {
-        setRoomState(state);
-        broadcastState(state);
+        broadcastState(updatedRoom);
       };
 
       const startGame = () => {
         if (roomState.hostId !== myId) return;
-        const playerCount = roomState.playersOrder.length;
-        if (playerCount < 2) {
+        if (roomState.playersOrder.length < 2) {
           showToast("At least 2 players are required to start the game!", "error");
           return;
         }
@@ -441,7 +457,7 @@
         const list = customRoundsList || activeState.roundsList;
         
         if (nextIndex >= list.length) {
-          updateRoomStateDirect({ ...activeState, status: 'GAME_OVER' });
+          broadcastState({ ...activeState, status: 'GAME_OVER' });
           return;
         }
 
@@ -488,7 +504,7 @@
           roundWinnerLog: []
         };
 
-        updateRoomStateDirect(updatedRoom);
+        broadcastState(updatedRoom);
       };
 
       const submitBid = (bidValue) => {
@@ -510,7 +526,7 @@
           }
         }
 
-        updateRoomStateDirect({
+        broadcastState({
           ...roomState,
           players: updatedPlayers,
           currentTurnIndex: allHaveBid ? 0 : nextTurn,
@@ -555,7 +571,7 @@
           }
         }
 
-        updateRoomStateDirect({
+        broadcastState({
           ...roomState,
           players: updatedPlayers,
           status: nextStatus,
@@ -591,7 +607,7 @@
 
         if (!hasTrickEnded) {
           const nextTurnIndex = (roomState.currentTurnIndex + 1) % pIdOrder.length;
-          updateRoomStateDirect({
+          broadcastState({
             ...roomState,
             players: updatedPlayers,
             desk: newDesk,
@@ -610,7 +626,7 @@
           const roundFinished = updatedPlayers[myId].hand.length === 0;
 
           if (!roundFinished) {
-            updateRoomStateDirect({
+            broadcastState({
               ...roomState,
               players: updatedPlayers,
               desk: [],
@@ -627,7 +643,7 @@
               }
             });
 
-            updateRoomStateDirect({
+            broadcastState({
               ...roomState,
               players: updatedPlayers,
               desk: newDesk,
@@ -652,7 +668,7 @@
           updatedPlayers[pId].tricksWon = 0;
         });
 
-        updateRoomStateDirect({
+        broadcastState({
           ...roomState,
           players: updatedPlayers,
           status: 'LOBBY',
@@ -691,42 +707,21 @@
         }
       };
 
-      const saveCustomDatabase = () => {
-        try {
-          const parsed = JSON.parse(dbInput);
-          if (!parsed.apiKey || !parsed.projectId) {
-            showToast("Invalid config. Must include apiKey and projectId.", "error");
-            return;
-          }
-          localStorage.setItem('judgment_custom_firebase_config', dbInput);
-          showToast("Custom database saved! Reloading...", "success");
-          setTimeout(() => window.location.reload(), 1500);
-        } catch(e) {
-          showToast("Invalid JSON string.", "error");
-        }
-      };
-
-      const resetDatabaseDefault = () => {
-        localStorage.removeItem('judgment_custom_firebase_config');
-        showToast("Reset to default sandbox! Reloading...", "success");
-        setTimeout(() => window.location.reload(), 1500);
-      };
-
-      // Safety checks for deck sufficient count before starting
+      // Table card limit warnings check
       const totalCardsInDeck = roomState ? (roomState.settings.deckCount * 52) + roomState.settings.jokerCount : 52;
       const peakRequiredCards = roomState ? getPeakDealtCards(roomState.settings.maxRound, roomState.settings.blindRound) : 10;
       const totalCapacityNeeded = roomState ? roomState.playersOrder.length * peakRequiredCards : 0;
       const isDeckSufficient = totalCardsInDeck >= totalCapacityNeeded;
 
       // ==========================================
-      // RENDERING INTERFACES
+      // UI STYLING & RENDERING COMPONENT
       // ==========================================
       return (
         <div className="min-h-screen flex flex-col justify-between max-w-lg mx-auto px-4 pb-4">
           
-          {/* Custom Action Alert Toast */}
+          {/* Custom Toast Alert Banner */}
           {toast && (
-            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center space-x-2 px-6 py-3 rounded-full shadow-2xl transition-all border font-bold text-xs ${
+            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center space-x-2 px-6 py-2.5 rounded-full shadow-2xl transition-all border font-bold text-xs ${
               toast.type === 'success' ? 'bg-emerald-500 border-emerald-300 text-slate-950' :
               toast.type === 'error' ? 'bg-rose-500 border-rose-300 text-white' :
               'bg-indigo-600 border-indigo-400 text-white'
@@ -735,20 +730,18 @@
             </div>
           )}
 
-          {/* NICKNAME ENTRY MODULE */}
+          {/* LOBBY OR NICKNAME FORM SCREEN */}
           {(!roomId || !roomState) && (
             <div className="flex-grow flex flex-col items-center justify-center py-12">
               <div className="text-center mb-6">
                 <div className="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl border border-emerald-500/20 mb-3 animate-bounce">
                   🃏
                 </div>
-                <div className="flex items-center justify-center space-x-2">
-                  <h1 className="text-4xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent tracking-wider">JUDGMENT</h1>
-                  <button onClick={() => setShowDbModal(true)} className="p-1 text-slate-400 hover:text-white transition-colors" title="Database Configuration">
-                    ⚙️
-                  </button>
-                </div>
-                <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Multiplayer Prediction Card Table</p>
+                <h1 className="text-4xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent tracking-wider">JUDGMENT</h1>
+                <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Free Real-Time Multi-Device Card Table</p>
+                <span className="inline-block mt-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-black tracking-widest uppercase px-3.5 py-1 rounded-full">
+                  {!isSandboxEnv ? "⚡ Global Direct Mode (Keyless)" : "🎨 Sandbox Mode"}
+                </span>
               </div>
 
               <div className="bg-white/5 border border-white/10 rounded-3xl p-5 shadow-2xl w-full space-y-4">
@@ -797,20 +790,20 @@
                 </div>
               </div>
 
-              {/* URL Invite Detect alert */}
+              {/* Automatic Invite Banner detection */}
               {roomId && (
                 <div className="mt-4 p-3 bg-amber-400/10 border border-amber-400/20 text-amber-300 rounded-xl text-xs text-center font-bold">
-                  👋 You hold an active invite for Room code <span className="underline">{roomId}</span>. Type nickname and tap Join!
+                  👋 You hold an active table invitation for <span className="underline">{roomId}</span>. Pick a nickname and tap Join!
                 </div>
               )}
             </div>
           )}
 
-          {/* ACTIVE GAME TABLES */}
+          {/* ACTIVE GAME VIEWPORTS */}
           {roomId && roomState && (
             <div className="flex-grow flex flex-col justify-between w-full py-4 space-y-4">
               
-              {/* Header Info */}
+              {/* Header Panel */}
               <div className="bg-emerald-950/60 border border-emerald-900/40 rounded-2xl p-3.5 flex justify-between items-center shadow-lg">
                 <div className="flex items-center space-x-2">
                   <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-lg text-xs font-black text-amber-400">
@@ -836,16 +829,16 @@
                 )}
               </div>
 
-              {/* STAGE 1: LOBBY & HOST RULES CONFIG */}
+              {/* STAGE 1: TABLE LOBBY CONFIG RULES */}
               {roomState.status === 'LOBBY' && (
                 <div className="flex-grow flex flex-col justify-center space-y-5">
                   <div className="text-center space-y-1">
                     <h2 className="text-xl font-black text-slate-100">Establish Table Rules</h2>
-                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Hosts setup game limit variables below</p>
+                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Host configures cards limits before starting</p>
                   </div>
 
                   <div className="bg-white/5 border border-white/10 rounded-3xl p-4 space-y-4">
-                    {/* Deck count configuration */}
+                    {/* Deck Count Configuration */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Decks Count</span>
@@ -855,7 +848,7 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.deckCount <= 1}
                           onClick={() => updateSettings('deckCount', roomState.settings.deckCount - 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           -
                         </button>
@@ -863,24 +856,24 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.deckCount >= 4}
                           onClick={() => updateSettings('deckCount', roomState.settings.deckCount + 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           +
                         </button>
                       </div>
                     </div>
 
-                    {/* Jokers config */}
+                    {/* Jokers Included */}
                     <div className="flex justify-between items-center">
                       <div>
-                        <span className="text-xs font-bold block">Jokers Included</span>
-                        <span className="text-[10px] text-slate-400">Jokers beat everything</span>
+                        <span className="text-xs font-bold block">Jokers Count</span>
+                        <span className="text-[10px] text-slate-400">Jokers beat all Sir cards</span>
                       </div>
                       <div className="flex items-center space-x-3 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.jokerCount <= 0}
                           onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount - 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           -
                         </button>
@@ -888,14 +881,14 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.jokerCount >= 6}
                           onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount + 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           +
                         </button>
                       </div>
                     </div>
 
-                    {/* Peak progressive size */}
+                    {/* Progressive peak limit */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Max Cards (Peak)</span>
@@ -905,7 +898,7 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.maxRound <= 3}
                           onClick={() => updateSettings('maxRound', roomState.settings.maxRound - 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           -
                         </button>
@@ -913,14 +906,14 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.maxRound >= 13}
                           onClick={() => updateSettings('maxRound', roomState.settings.maxRound + 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           +
                         </button>
                       </div>
                     </div>
 
-                    {/* Blind round setup */}
+                    {/* Blind round select */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Custom Blind Round</span>
@@ -930,7 +923,7 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.blindRound <= 1}
                           onClick={() => updateSettings('blindRound', roomState.settings.blindRound - 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           -
                         </button>
@@ -938,7 +931,7 @@
                         <button 
                           disabled={roomState.hostId !== myId || roomState.settings.blindRound >= roomState.settings.maxRound}
                           onClick={() => updateSettings('blindRound', roomState.settings.blindRound + 1)}
-                          className="text-slate-400 disabled:opacity-30 font-black"
+                          className="text-slate-400 disabled:opacity-30 font-black px-1.5"
                         >
                           +
                         </button>
@@ -963,14 +956,14 @@
                     </div>
                   </div>
 
-                  {/* Deck sufficiency calculation output */}
+                  {/* Deck capacity limit warnings checks */}
                   {roomState.playersOrder.length >= 2 && (
                     <div className={`p-3 rounded-xl border text-xs font-bold text-center ${isDeckSufficient ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-300'}`}>
                       <div>Total cards in deck: <span className="underline">{totalCardsInDeck}</span></div>
                       <div>Peak round cards required: <span className="underline">{totalCapacityNeeded}</span> ({roomState.playersOrder.length} players × {peakRequiredCards} cards)</div>
                       {!isDeckSufficient && (
                         <div className="mt-1 text-[10px] font-black uppercase text-rose-400">
-                          ⚠️ Warning: Not enough cards! Ditch high limits or add another deck.
+                          ⚠️ Warning: Not enough cards! Ditch high limits or add another deck in parameters.
                         </div>
                       )}
                     </div>
@@ -982,17 +975,17 @@
                       disabled={!isDeckSufficient}
                       className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-500 text-slate-950 font-black py-4 rounded-xl text-sm shadow-lg flex items-center justify-center space-x-2 active:scale-95 transition-all"
                     >
-                      🚀 Start Grand Game
+                      🚀 Start Tournament
                     </button>
                   ) : (
-                    <div className="p-4 bg-emerald-950/20 border border-emerald-900/40 rounded-xl text-center text-xs text-emerald-300 font-bold animate-pulse">
-                      Waiting for host to deal cards...
+                    <div className="p-4 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold animate-pulse">
+                      Waiting for host to trigger deal...
                     </div>
                   )}
                 </div>
               )}
 
-              {/* STAGE 2: CARD DISCARDING SEQUENCE (Blind/High rounds) */}
+              {/* STAGE 2: CARD DISCARDING SEQUENCES (Blind/High rounds) */}
               {(roomState.status === 'DISCARDING_BEFORE_BID' || roomState.status === 'DISCARDING_AFTER_BID') && (
                 <div className="flex-grow flex flex-col justify-between space-y-4">
                   <div className="text-center space-y-1">
@@ -1070,7 +1063,7 @@
                 </div>
               )}
 
-              {/* STAGE 3: BIDDING TIMELINE */}
+              {/* STAGE 3: BIDDING DECISIONS TIMELINE */}
               {roomState.status === 'BIDDING' && (
                 <div className="flex-grow flex flex-col justify-between space-y-4">
                   <div className="text-center">
@@ -1082,7 +1075,7 @@
                     </h2>
                   </div>
 
-                  {/* Bids live board (Supports 6 players column wrapping) */}
+                  {/* Bids live tracking status grids */}
                   <div className="grid grid-cols-3 gap-1.5">
                     {roomState.playersOrder.map(pId => {
                       const p = roomState.players[pId];
@@ -1098,13 +1091,13 @@
                     })}
                   </div>
 
-                  {/* Bid Button grid selector */}
+                  {/* Bidding buttons panel wrapper */}
                   <div className="flex-1 flex flex-col justify-center items-center bg-black/15 border border-white/5 rounded-2xl p-4">
                     {roomState.players[myId]?.currentBid !== null ? (
                       <div className="text-center space-y-1">
                         <span className="text-[10px] uppercase text-slate-500 font-bold block">My Prediction Locked</span>
                         <span className="text-3xl font-black text-emerald-400">BID: {roomState.players[myId].currentBid}</span>
-                        <span className="text-[10px] text-slate-400 block pt-2">Waiting for opponents...</span>
+                        <span className="text-[10px] text-slate-400 block pt-2">Waiting for other opponents...</span>
                       </div>
                     ) : myId === roomState.playersOrder[roomState.currentTurnIndex] ? (
                       <div className="text-center w-full">
@@ -1166,17 +1159,17 @@
                 </div>
               )}
 
-              {/* STAGE 4: MAIN PLAYING SCREEN */}
+              {/* STAGE 4: MAIN PLAYING TABLE TRICKS FELT */}
               {roomState.status === 'PLAYING' && (
                 <div className="flex-grow flex flex-col justify-between space-y-4">
                   
-                  {/* Scoreboard Tracker HUD (Dynamic 2x3 grid on 6 players) */}
+                  {/* Scoreboard compact grid HUD */}
                   <div className="grid grid-cols-3 gap-1.5">
                     {roomState.playersOrder.map(id => {
                       const p = roomState.players[id];
                       const isTurn = id === roomState.playersOrder[roomState.currentTurnIndex];
                       return (
-                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400' : 'bg-slate-950/40 border-slate-800'}`}>
+                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400 shadow-inner' : 'bg-slate-950/40 border-slate-800'}`}>
                           <span className="font-bold block truncate text-slate-300">{p.name}</span>
                           <span className="font-black text-white block mt-0.5">
                             {p.tricksWon}/{p.currentBid}
@@ -1186,7 +1179,7 @@
                     })}
                   </div>
 
-                  {/* Felt table middle */}
+                  {/* Felt table middle layout */}
                   <div className="flex-1 bg-gradient-to-b from-emerald-900 via-emerald-950 to-emerald-900/60 border border-emerald-800/60 rounded-3xl p-4 flex flex-col justify-between relative min-h-[220px]">
                     <div className="flex justify-between text-[10px] border-b border-emerald-900 pb-2">
                       <span className="text-emerald-300">Lead Suit: {roomState.leadSuit ? CARD_SUIT_NAMES[roomState.leadSuit] : 'None'}</span>
@@ -1217,15 +1210,15 @@
                       )}
                     </div>
 
-                    {/* Logs ticker */}
+                    {/* Previous rounds trace log */}
                     <div className="text-[9px] text-slate-400 text-center italic mt-1">
                       {roomState.roundWinnerLog && roomState.roundWinnerLog.length > 0 
-                        ? `Last trick won by: ${roomState.roundWinnerLog[roomState.roundWinnerLog.length - 1]}` 
+                        ? `Last trick won: ${roomState.roundWinnerLog[roomState.roundWinnerLog.length - 1]}` 
                         : 'No tricks played yet.'}
                     </div>
                   </div>
 
-                  {/* Playable card selector container */}
+                  {/* Playable cards selection drawer */}
                   <div className="space-y-2">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block text-center">Tap a card to play legally</span>
                     <div className="flex justify-center items-center overflow-x-auto min-h-[110px] px-6 custom-scroll">
@@ -1263,7 +1256,7 @@
                 </div>
               )}
 
-              {/* STAGE 5: ROUND SCOREBOARD SUMMARY SCREEN */}
+              {/* STAGE 5: ROUND SUMMARY SCOREBOARD SCREEN */}
               {roomState.status === 'ROUND_SUMMARY' && (
                 <div className="flex-grow flex flex-col justify-center space-y-6">
                   <div className="text-center">
@@ -1316,7 +1309,7 @@
                 </div>
               )}
 
-              {/* STAGE 6: GAME OVER (PODIUM) */}
+              {/* STAGE 6: TOURNAMENT COMPLETED SCOREBOARD */}
               {roomState.status === 'GAME_OVER' && (
                 <div className="flex-grow flex flex-col justify-center space-y-6">
                   <div className="text-center space-y-2">
@@ -1329,8 +1322,8 @@
                       .map(id => roomState.players[id])
                       .sort((a,b) => b.score - a.score)
                       .map((p, i) => (
-                        <div key={p.id} className="flex justify-between items-center py-2 border-b last:border-b-0 border-slate-800/60">
-                          <span className="font-bold text-sm">#{i+1} {p.name}</span>
+                        <div key={p.id} className="flex justify-between items-center py-2 border-b last:border-b-0 border-slate-800/60 font-bold">
+                          <span className="text-sm">#{i+1} {p.name}</span>
                           <span className="font-black text-amber-300">{p.score} pts</span>
                         </div>
                       ))}
@@ -1353,47 +1346,11 @@
 
             </div>
           )}
-
-          {/* ==========================================
-              4. CUSTOM DATABASE SETUP MODAL
-             ========================================== */}
-          {showDbModal && (
-            <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 max-w-sm w-full space-y-4 shadow-2xl">
-                <div>
-                  <h3 className="text-lg font-black text-amber-400">⚙️ Database Setup</h3>
-                  <p className="text-[10px] text-slate-400 leading-relaxed mt-1">
-                    By default, this game uses our shared public sandbox table. To secure private matches on Vercel, paste your own free Firestore config JSON below.
-                  </p>
-                </div>
-
-                <textarea 
-                  value={dbInput}
-                  onChange={(e) => setDbInput(e.target.value)}
-                  className="w-full h-36 bg-slate-950 border border-slate-800 rounded-xl p-3 text-[11px] font-mono text-emerald-400 focus:outline-none focus:border-emerald-500"
-                />
-
-                <div className="flex space-x-2">
-                  <button onClick={saveCustomDatabase} className="flex-1 bg-emerald-500 text-slate-950 font-black py-2.5 rounded-xl text-xs">
-                    Save Config
-                  </button>
-                  <button onClick={resetDatabaseDefault} className="flex-1 bg-slate-800 text-slate-300 font-bold py-2.5 rounded-xl text-xs">
-                    Use Sandbox
-                  </button>
-                </div>
-
-                <button onClick={() => setShowDbModal(false)} className="w-full text-center text-[10px] text-slate-500 hover:text-white pt-1">
-                  Close Settings
-                </button>
-              </div>
-            </div>
-          )}
-
         </div>
       );
     }
 
-    // Mount DOM Root
+    // Mount DOM node
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(React.createElement(App));
   </script>
