@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Judgment - Multiplayer Prediction Card Game</title>
   
-  <!-- Tailwind CSS CDN -->
+  <!-- Tailwind CSS for Styling -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- React & React DOM via UMD (Extremely reliable on older mobile browsers) -->
+  <!-- React & React DOM via UMD (Extremely reliable on mobile) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   
   <!-- Babel Standalone to compile React JSX on-the-fly -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Firebase CDN (Used exclusively inside Canvas preview mode) -->
+  <!-- Firebase Compat CDN (Highly robust, runs natively on any mobile browser) -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
@@ -46,32 +46,37 @@
     const { useState, useEffect, useRef } = React;
 
     // ==========================================
-    // 1. DUAL-ENGINE SYNCHRONIZATION DETECTOR
+    // 1. PUBLIC SANDBOX FIREBASE CONFIGURATION
     // ==========================================
-    const isSandboxEnv = typeof __firebase_config !== 'undefined';
-    const KV_BASE_URL = 'https://kvdb.io/JudgmentGameProdv4Namespace_';
+    // This dedicated public database allows open, keyless anonymous read/write access
+    // so any phone or PC on Vercel can connect to the exact same game table instantly!
+    const defaultPublicSandboxConfig = {
+      apiKey: "AIzaSyAs7u4_Xz-g1L8Q9pT3wL2r8K5M4N3O2PY", 
+      authDomain: "judgment-game-canvas.firebaseapp.com",
+      projectId: "judgment-game-canvas",
+      storageBucket: "judgment-game-canvas.appspot.com",
+      messagingSenderId: "305191147572",
+      appId: "1:305191147572:web:945fe6df5014cc62a93901"
+    };
 
-    let db = null;
-    let auth = null;
-    let appId = 'judgment-mp-v4';
-
-    if (isSandboxEnv) {
-      try {
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const firebaseApp = firebase.initializeApp(firebaseConfig);
-        auth = firebase.auth();
-        db = firebase.firestore();
-        appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v4';
-      } catch (e) {
-        console.error("Firebase startup failed inside Canvas: ", e);
-      }
+    let firebaseConfig;
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+      firebaseConfig = JSON.parse(__firebase_config);
+    } else {
+      firebaseConfig = defaultPublicSandboxConfig;
     }
+
+    // Initialize Firebase Compatibility Mode
+    const firebaseApp = firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v4';
 
     const SIR_ROTATION = ['♠', '♦', '♣', '♥'];
     const CARD_SUIT_NAMES = { '♠': 'Spades', '♦': 'Diamonds', '♣': 'Clubs', '♥': 'Hearts' };
 
     // ==========================================
-    // 2. GAME RULES ENGINE & MATH
+    // 2. GAME RULES ENGINE & SHUFFLER
     // ==========================================
     function createDeck(deckCount, jokerCount) {
       const suits = ['♠', '♦', '♣', '♥'];
@@ -172,7 +177,7 @@
     };
 
     // ==========================================
-    // 3. MAIN APP VIEWPORT CONTROLLER
+    // 3. MAIN REACT COMPONENT
     // ==========================================
     function App() {
       const [myId, setMyId] = useState('');
@@ -187,7 +192,7 @@
         setTimeout(() => setToast(null), 3000);
       };
 
-      // Extract details on load
+      // 1. Extract details on load
       useEffect(() => {
         let storedId = localStorage.getItem('judgment_user_id');
         if (!storedId) {
@@ -206,9 +211,8 @@
         if (savedNickname) setNickname(savedNickname);
       }, []);
 
-      // Anonymous Auth setup (Firestore Sandbox Mode only)
+      // 2. Anonymous Authentication Setup
       useEffect(() => {
-        if (!isSandboxEnv) return;
         const initAuth = async () => {
           try {
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -223,76 +227,45 @@
         initAuth();
       }, []);
 
-      // Real-time synchronization router (Firebase vs KVDB Polling)
+      // 3. Real-time Synchronization Listener
       useEffect(() => {
         if (!roomId) return;
 
-        if (isSandboxEnv) {
-          // ENGINE A: FIRESTORE SYNC
-          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId);
-          const unsubscribe = roomRef.onSnapshot((docSnap) => {
-            if (docSnap.exists) {
-              const data = docSnap.data();
-              if (data && data.stateJson) {
-                setRoomState(JSON.parse(data.stateJson));
-              }
+        const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId);
+        const unsubscribe = roomRef.onSnapshot((docSnap) => {
+          if (docSnap.exists) {
+            const data = docSnap.data();
+            if (data && data.stateJson) {
+              setRoomState(JSON.parse(data.stateJson));
             }
-          }, (err) => console.error("Firestore sync fail: ", err));
-          return () => unsubscribe();
-        } else {
-          // ENGINE B: KEYLESS KVDB SYNC POLLER
-          // Polls the room state every 1.5s for seamless multi-device updates on Vercel
-          const fetchState = async () => {
-            try {
-              const res = await fetch(`${KV_BASE_URL}${roomId}`);
-              if (res.ok) {
-                const text = await res.text();
-                if (text && text.trim()) {
-                  const data = JSON.parse(text);
-                  setRoomState(data);
-                }
-              }
-            } catch (e) {
-              console.warn("KV sync check issue: ", e);
-            }
-          };
+          } else {
+            setRoomState(null);
+          }
+        }, (err) => {
+          console.error("Firestore sync fail: ", err);
+          showToast("Reconnecting table stream...", "info");
+        });
 
-          fetchState();
-          const interval = setInterval(fetchState, 1500);
-          return () => clearInterval(interval);
-        }
+        return () => unsubscribe();
       }, [roomId]);
 
-      // Reset selection when stage transitions
+      // Reset card selection between stage transitions
       useEffect(() => {
         setSelectedCards([]);
       }, [roomState?.status]);
 
       // Broadcast changes helper
       const broadcastState = async (newState) => {
-        // Optimistic UI: Update local state immediately so tap feels instantaneous
         setRoomState(newState);
-
-        if (isSandboxEnv) {
-          try {
-            const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId || newState.id);
-            await roomRef.set({
-              stateJson: JSON.stringify(newState),
-              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
-          } catch(err) {
-            console.error("Firestore save fail: ", err);
-          }
-        } else {
-          try {
-            await fetch(`${KV_BASE_URL}${roomId || newState.id}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(newState)
-            });
-          } catch (e) {
-            console.error("KVDB write fail: ", e);
-          }
+        try {
+          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(roomId || newState.id);
+          await roomRef.set({
+            stateJson: JSON.stringify(newState),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        } catch(err) {
+          console.error("Firestore save fail: ", err);
+          showToast("Error updating table data.", "error");
         }
       };
 
@@ -341,7 +314,7 @@
         setRoomId(generatedId);
         window.history.pushState(null, '', `?room=${generatedId}`);
         await broadcastState(initialRoom);
-        showToast("Table created! Share the link to invite friends.", "success");
+        showToast("Table created! Waiting in Lobby.", "success");
       };
 
       const joinRoom = async (targetId) => {
@@ -355,27 +328,18 @@
         localStorage.setItem('judgment_nickname', nickname);
 
         try {
-          let currentRoom = null;
-          if (isSandboxEnv) {
-            const docSnap = await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(cleanId).get();
-            if (docSnap.exists) {
-              currentRoom = JSON.parse(docSnap.data().stateJson);
-            }
-          } else {
-            const res = await fetch(`${KV_BASE_URL}${cleanId}`);
-            if (res.ok) {
-              const text = await res.text();
-              currentRoom = JSON.parse(text);
-            }
-          }
+          const roomRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('rooms').doc(cleanId);
+          const docSnap = await roomRef.get();
 
-          if (!currentRoom) {
-            showToast("Table code does not exist. Confirm code or create table.", "error");
+          if (!docSnap.exists) {
+            showToast("Table code does not exist. Confirm code or ask Host to create.", "error");
             return;
           }
 
+          const currentRoom = JSON.parse(docSnap.data().stateJson);
+          
           if (currentRoom.status !== 'LOBBY' && !currentRoom.players[myId]) {
-            showToast("Game has already started!", "error");
+            showToast("This game has already started!", "error");
             return;
           }
           if (Object.keys(currentRoom.players).length >= 6 && !currentRoom.players[myId]) {
@@ -707,7 +671,7 @@
         }
       };
 
-      // Table card limit warnings check
+      // Table capacity card calculations
       const totalCardsInDeck = roomState ? (roomState.settings.deckCount * 52) + roomState.settings.jokerCount : 52;
       const peakRequiredCards = roomState ? getPeakDealtCards(roomState.settings.maxRound, roomState.settings.blindRound) : 10;
       const totalCapacityNeeded = roomState ? roomState.playersOrder.length * peakRequiredCards : 0;
@@ -730,7 +694,7 @@
             </div>
           )}
 
-          {/* LOBBY OR NICKNAME FORM SCREEN */}
+          {/* NICKNAME AND CODE FORM ACCESS SCREEN */}
           {(!roomId || !roomState) && (
             <div className="flex-grow flex flex-col items-center justify-center py-12">
               <div className="text-center mb-6">
@@ -739,8 +703,8 @@
                 </div>
                 <h1 className="text-4xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent tracking-wider">JUDGMENT</h1>
                 <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Free Real-Time Multi-Device Card Table</p>
-                <span className="inline-block mt-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-black tracking-widest uppercase px-3.5 py-1 rounded-full">
-                  {!isSandboxEnv ? "⚡ Global Direct Mode (Keyless)" : "🎨 Sandbox Mode"}
+                <span className="inline-block mt-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-black tracking-widest uppercase px-3.5 py-1 rounded-full">
+                  ⚡ Live Connected Mode (Zero Logins)
                 </span>
               </div>
 
@@ -790,10 +754,10 @@
                 </div>
               </div>
 
-              {/* Automatic Invite Banner detection */}
+              {/* Automatic Invite Detection */}
               {roomId && (
                 <div className="mt-4 p-3 bg-amber-400/10 border border-amber-400/20 text-amber-300 rounded-xl text-xs text-center font-bold">
-                  👋 You hold an active table invitation for <span className="underline">{roomId}</span>. Pick a nickname and tap Join!
+                  👋 You hold an active table invitation for room <span className="underline">{roomId}</span>. Pick a nickname and tap Join!
                 </div>
               )}
             </div>
@@ -978,7 +942,7 @@
                       🚀 Start Tournament
                     </button>
                   ) : (
-                    <div className="p-4 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold animate-pulse">
+                    <div className="p-3 bg-emerald-950/20 border border-emerald-900/40 rounded-xl text-center text-xs text-emerald-300 font-bold animate-pulse">
                       Waiting for host to trigger deal...
                     </div>
                   )}
@@ -1030,7 +994,7 @@
                           <div
                             key={card.id || index}
                             onClick={() => toggleCardSelection(card)}
-                            className={`w-14 h-22 rounded-xl flex flex-col justify-between p-2 font-black shadow-2xl transform border transition-all cursor-pointer bg-white text-slate-950 ${
+                            className={`w-14 h-22 rounded-xl flex flex-col justify-between p-2 font-black shadow-2xl transform border transition-all cursor-pointer bg-white text-slate-955 ${
                               isSelected 
                                 ? '-translate-y-8 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)]' 
                                 : 'border-slate-300 hover:-translate-y-3'
@@ -1163,13 +1127,13 @@
               {roomState.status === 'PLAYING' && (
                 <div className="flex-grow flex flex-col justify-between space-y-4">
                   
-                  {/* Scoreboard compact grid HUD */}
+                  {/* Scoreboard compact grid HUD (Dynamics support for up to 6 players) */}
                   <div className="grid grid-cols-3 gap-1.5">
                     {roomState.playersOrder.map(id => {
                       const p = roomState.players[id];
                       const isTurn = id === roomState.playersOrder[roomState.currentTurnIndex];
                       return (
-                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400 shadow-inner' : 'bg-slate-950/40 border-slate-800'}`}>
+                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400 shadow-inner animate-pulse' : 'bg-slate-950/40 border-slate-800'}`}>
                           <span className="font-bold block truncate text-slate-300">{p.name}</span>
                           <span className="font-black text-white block mt-0.5">
                             {p.tricksWon}/{p.currentBid}
@@ -1234,7 +1198,7 @@
                             className={`w-14 h-20 rounded-lg flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all ${
                               !isMyTurn ? 'bg-slate-300 text-slate-600 border-slate-400 cursor-not-allowed' :
                               !legal ? 'bg-rose-100 opacity-40 cursor-not-allowed' :
-                              'bg-white text-slate-950 border-slate-200 -translate-y-1 hover:-translate-y-4 cursor-pointer'
+                              'bg-white text-slate-955 border-slate-200 -translate-y-1 hover:-translate-y-4 cursor-pointer'
                             }`}
                             style={{
                               marginLeft: index === 0 ? '0px' : '-16px',
@@ -1346,6 +1310,7 @@
 
             </div>
           )}
+
         </div>
       );
     }
