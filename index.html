@@ -2,21 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Judgment - Multiplayer Prediction Card Game</title>
-  <!-- Tailwind CSS CDN -->
+  
+  <!-- Tailwind CSS for styling -->
   <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & React DOM via UMD (Guarantees zero version mismatch errors on mobile) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel Standalone to compile JSX directly in the mobile browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Gun.js: Free, Open-Source, Keyless Real-Time Database -->
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+
   <style>
-    /* Custom scrollbar and overlapping card animations */
+    /* Styling optimization for mobile browsers */
+    body {
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
     .custom-scroll::-webkit-scrollbar {
-      height: 6px;
+      height: 4px;
     }
     .custom-scroll::-webkit-scrollbar-track {
       background: rgba(0,0,0,0.1);
     }
     .custom-scroll::-webkit-scrollbar-thumb {
-      background: rgba(255,255,255,0.2);
-      border-radius: 4px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 99px;
     }
   </style>
 </head>
@@ -24,44 +40,25 @@
 
   <div id="root"></div>
 
-  <!-- ES Module Loader directly in browser -->
-  <script type="module">
-    import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
-    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-    import { initializeApp } from 'https://esm.sh/firebase@10.8.0/app';
-    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://esm.sh/firebase@10.8.0/auth';
-    import { getFirestore, doc, setDoc, onSnapshot, updateDoc } from 'https://esm.sh/firebase@10.8.0/firestore';
-    import { 
-      Share2, Copy, Users, Plus, Minus, Play, Settings, RotateCcw, 
-      CheckCircle, AlertCircle, Trophy, ArrowRight, Sparkles, HelpCircle 
-    } from 'https://esm.sh/lucide-react@0.344.0';
+  <!-- Game Code Block compiled on-the-fly -->
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
 
     // ==========================================
-    // 1. FIREBASE CONFIGURATION
+    // 1. KEYLESS REAL-TIME DATABASE BOOTSTRAP
     // ==========================================
-    const firebaseConfig = {
-      apiKey: "", // Filled automatically by runtime execution environments
-      authDomain: "judgment-game-canvas.firebaseapp.com",
-      projectId: "judgment-game-canvas",
-      storageBucket: "judgment-game-canvas.appspot.com",
-      messagingSenderId: "305191147572",
-      appId: "1:305191147572:web:945fe6df5014cc62a93901"
-    };
-
-    const activeConfig = typeof __firebase_config !== 'undefined' 
-      ? JSON.parse(__firebase_config) 
-      : firebaseConfig;
-
-    const app = initializeApp(activeConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v1';
+    // Gun uses public free relay peers to sync database updates instantly across all connected phones
+    const gun = Gun([
+      'https://gun-manhattan.herokuapp.com/gun',
+      'https://gundb.herokuapp.com/gun',
+      'https://peer.wall.gq/gun'
+    ]);
 
     const SIR_ROTATION = ['♠', '♦', '♣', '♥'];
     const CARD_SUIT_NAMES = { '♠': 'Spades', '♦': 'Diamonds', '♣': 'Clubs', '♥': 'Hearts' };
 
     // ==========================================
-    // 2. GAME DECK AND MATH UTILITIES
+    // 2. DECK AND GAME LOGIC ENGINE
     // ==========================================
     function createDeck(deckCount, jokerCount) {
       const suits = ['♠', '♦', '♣', '♥'];
@@ -80,6 +77,7 @@
         deck.push({ suit: 'JOKER', value: '🃏', id: `joker-${j}` });
       }
 
+      // Fisher-Yates Shuffling Algorithm
       for (let i = deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -95,6 +93,7 @@
       return weights[value] || 0;
     }
 
+    // Handles identical cards trick winner calculations (last played card wins on ties)
     function calculateTrickWinner(desk, sirColor, leadSuit) {
       if (desk.length === 0) return null;
       let winningPlay = desk;
@@ -154,10 +153,10 @@
     };
 
     // ==========================================
-    // 3. MAIN COMPONENT
+    // 3. MAIN COMPONENT DEFINITION
     // ==========================================
     function App() {
-      const [user, setUser] = useState(null);
+      const [myId, setMyId] = useState('');
       const [roomId, setRoomId] = useState('');
       const [nickname, setNickname] = useState('');
       const [roomState, setRoomState] = useState(null);
@@ -166,10 +165,18 @@
 
       const showToast = (message, type = 'info') => {
         setToast({ message, type });
-        setTimeout(() => setToast(null), 4000);
+        setTimeout(() => setToast(null), 3000);
       };
 
+      // 1. Initialize custom persistent user ID & nickname
       useEffect(() => {
+        let storedId = localStorage.getItem('judgment_user_id');
+        if (!storedId) {
+          storedId = 'p-' + Math.random().toString(36).substring(2, 9);
+          localStorage.setItem('judgment_user_id', storedId);
+        }
+        setMyId(storedId);
+
         const params = new URLSearchParams(window.location.search);
         const urlRoom = params.get('room');
         if (urlRoom) setRoomId(urlRoom.toUpperCase());
@@ -178,47 +185,44 @@
         if (savedNickname) setNickname(savedNickname);
       }, []);
 
+      // 2. Subscribe to dynamic real-time Gun.js updates
       useEffect(() => {
-        const initAuth = async () => {
-          try {
-            await signInAnonymously(auth);
-          } catch (err) {
-            console.error("Auth failed:", err);
-            showToast("Server connecting error. Please refresh.", "error");
-          }
-        };
-        initAuth();
-        const unsubscribe = onAuthStateChanged(auth, (currUser) => {
-          if (currUser) setUser(currUser);
-        });
-        return () => unsubscribe();
-      }, []);
+        if (!roomId) return;
 
-      useEffect(() => {
-        if (!user || !roomId) return;
-
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const unsubscribe = onSnapshot(roomRef, (snapshot) => {
-          if (snapshot.exists()) {
-            setRoomState(snapshot.data());
+        const roomNode = gun.get('judgment-game-v1').get(roomId);
+        const handleData = (data) => {
+          if (data && data.stateJson) {
+            try {
+              const parsed = JSON.parse(data.stateJson);
+              setRoomState(parsed);
+            } catch (err) {
+              console.error("Failed parsing room JSON state", err);
+            }
           } else {
             setRoomState(null);
           }
-        }, (error) => {
-          console.error("Firestore sync error:", error);
-          showToast("Lost synchronization. Reconnecting...", "error");
-        });
+        };
 
-        return () => unsubscribe();
-      }, [user, roomId]);
+        roomNode.on(handleData);
+        return () => roomNode.off();
+      }, [roomId]);
 
+      // Reset card selection between stage changes
       useEffect(() => {
         setSelectedCards([]);
       }, [roomState?.status]);
 
-      // ACTIONS
-      const createRoom = async () => {
-        if (!user) return;
+      // Broadcast changes helper
+      const updateRoomState = (newState) => {
+        gun.get('judgment-game-v1').get(roomId).put({
+          stateJson: JSON.stringify(newState)
+        });
+      };
+
+      // ==========================================
+      // GAME PHASES CORE SYSTEM
+      // ==========================================
+      const createRoom = () => {
         if (!nickname.trim()) {
           showToast("Please enter a nickname first!", "error");
           return;
@@ -229,18 +233,17 @@
         const initialRoom = {
           id: generatedId,
           status: 'LOBBY',
-          hostId: user.uid,
-          playersOrder: [user.uid],
+          hostId: myId,
+          playersOrder: [myId],
           players: {
-            [user.uid]: {
-              id: user.uid,
+            [myId]: {
+              id: myId,
               name: nickname,
               score: 0,
               currentBid: null,
               tricksWon: 0,
               hand: [],
-              active: true,
-              lastActive: Date.now()
+              active: true
             }
           },
           settings: {
@@ -254,24 +257,21 @@
           sirColor: '♠',
           leadSuit: null,
           desk: [],
-          bidsCount: 0,
           currentTurnIndex: 0,
           roundWinnerLog: []
         };
 
-        try {
-          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', generatedId), initialRoom);
-          setRoomId(generatedId);
-          window.history.pushState(null, '', `?room=${generatedId}`);
-          showToast("Room created! Send link to friends.", "success");
-        } catch (err) {
-          console.error(err);
-          showToast("Failed to create room.", "error");
-        }
+        setRoomId(generatedId);
+        window.history.pushState(null, '', `?room=${generatedId}`);
+        
+        // Push state directly to the decentralized graph
+        gun.get('judgment-game-v1').get(generatedId).put({
+          stateJson: JSON.stringify(initialRoom)
+        });
+        showToast("Room created! Send link to friends.", "success");
       };
 
-      const joinRoom = async (targetId) => {
-        if (!user) return;
+      const joinRoom = (targetId) => {
         if (!nickname.trim()) {
           showToast("Please set a nickname first!", "error");
           return;
@@ -281,69 +281,70 @@
 
         localStorage.setItem('judgment_nickname', nickname);
 
-        try {
-          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', cleanId);
-          await setDoc(roomRef, {}, { merge: true });
+        gun.get('judgment-game-v1').get(cleanId).once((data) => {
+          if (!data || !data.stateJson) {
+            showToast("Room does not exist yet.", "error");
+            return;
+          }
 
-          onSnapshot(roomRef, async (snap) => {
-            if (!snap.exists()) {
-              showToast("Room not found.", "error");
-              return;
-            }
-            const data = snap.data();
-            if (data.status !== 'LOBBY' && !data.players[user.uid]) {
-              showToast("Game already in progress!", "error");
-              return;
-            }
-            if (Object.keys(data.players).length >= 4 && !data.players[user.uid]) {
-              showToast("Room is full! Max 4 players.", "error");
-              return;
-            }
+          const currentRoom = JSON.parse(data.stateJson);
+          if (currentRoom.status !== 'LOBBY' && !currentRoom.players[myId]) {
+            showToast("Game is already running!", "error");
+            return;
+          }
+          if (Object.keys(currentRoom.players).length >= 4 && !currentRoom.players[myId]) {
+            showToast("Lobby is full! Max 4 players.", "error");
+            return;
+          }
 
-            const updatedPlayers = { ...data.players };
-            const updatedOrder = [...(data.playersOrder || [])];
+          const updatedPlayers = { ...currentRoom.players };
+          const updatedOrder = [...(currentRoom.playersOrder || [])];
 
-            if (!updatedPlayers[user.uid]) {
-              updatedPlayers[user.uid] = {
-                id: user.uid,
-                name: nickname,
-                score: 0,
-                currentBid: null,
-                tricksWon: 0,
-                hand: [],
-                active: true,
-                lastActive: Date.now()
-              };
-              updatedOrder.push(user.uid);
-            } else {
-              updatedPlayers[user.uid].active = true;
-              updatedPlayers[user.uid].name = nickname;
-            }
+          if (!updatedPlayers[myId]) {
+            updatedPlayers[myId] = {
+              id: myId,
+              name: nickname,
+              score: 0,
+              currentBid: null,
+              tricksWon: 0,
+              hand: [],
+              active: true
+            };
+            updatedOrder.push(myId);
+          } else {
+            updatedPlayers[myId].active = true;
+            updatedPlayers[myId].name = nickname;
+          }
 
-            await updateDoc(roomRef, {
-              players: updatedPlayers,
-              playersOrder: updatedOrder
-            });
+          const updatedRoom = {
+            ...currentRoom,
+            players: updatedPlayers,
+            playersOrder: updatedOrder
+          };
 
-            setRoomId(cleanId);
-            window.history.pushState(null, '', `?room=${cleanId}`);
-          }, { onlyOnce: true });
-
-        } catch (err) {
-          console.error(err);
-          showToast("Failed to join room.", "error");
-        }
+          setRoomId(cleanId);
+          window.history.pushState(null, '', `?room=${cleanId}`);
+          updateRoomState(updatedRoom);
+          showToast("Joined game successfully!", "success");
+        });
       };
 
-      const updateSettings = async (key, value) => {
-        if (!user || roomState.hostId !== user.uid) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, { [`settings.${key}`]: value });
+      const updateSettings = (key, value) => {
+        if (roomState.hostId !== myId) return;
+        const updatedRoom = {
+          ...roomState,
+          settings: {
+            ...roomState.settings,
+            [key]: value
+          }
+        };
+        updateRoomState(updatedRoom);
       };
 
-      const startGame = async () => {
-        if (!user || roomState.hostId !== user.uid) return;
-        if (roomState.playersOrder.length < 2) {
+      const startGame = () => {
+        if (roomState.hostId !== myId) return;
+        const playerCount = roomState.playersOrder.length;
+        if (playerCount < 2) {
           showToast("Need at least 2 players to start!", "error");
           return;
         }
@@ -353,27 +354,27 @@
         for (let i = 1; i <= maxRound; i++) rounds.push(i);
         for (let i = maxRound - 1; i >= 1; i--) rounds.push(i);
 
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, {
+        const updatedRoom = {
+          ...roomState,
           roundsList: rounds,
           currentRoundIndex: 0,
           status: 'PRE_ROUND_DEAL'
-        });
-
-        dealNextRound(0, rounds);
+        };
+        
+        dealNextRound(0, rounds, updatedRoom);
       };
 
-      const dealNextRound = async (nextIndex, customRoundsList) => {
-        if (!user) return;
-        const list = customRoundsList || roomState.roundsList;
+      const dealNextRound = (nextIndex, customRoundsList, currentOverrideState) => {
+        const activeState = currentOverrideState || roomState;
+        const list = customRoundsList || activeState.roundsList;
+        
         if (nextIndex >= list.length) {
-          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-          await updateDoc(roomRef, { status: 'GAME_OVER' });
+          updateRoomState({ ...activeState, status: 'GAME_OVER' });
           return;
         }
 
         const roundTargetCount = list[nextIndex];
-        const isBlind = roundTargetCount === roomState.settings.blindRound;
+        const isBlind = roundTargetCount === activeState.settings.blindRound;
         const isHigh = roundTargetCount > 10;
 
         let dealCount = roundTargetCount;
@@ -383,10 +384,10 @@
           dealCount = roundTargetCount + 2;
         }
 
-        const masterDeck = createDeck(roomState.settings.deckCount, roomState.settings.jokerCount);
-        const updatedPlayers = { ...roomState.players };
+        const masterDeck = createDeck(activeState.settings.deckCount, activeState.settings.jokerCount);
+        const updatedPlayers = { ...activeState.players };
 
-        roomState.playersOrder.forEach((pId) => {
+        activeState.playersOrder.forEach((pId) => {
           const playerHand = [];
           for (let i = 0; i < dealCount; i++) {
             if (masterDeck.length > 0) playerHand.push(masterDeck.pop());
@@ -394,16 +395,17 @@
           updatedPlayers[pId].hand = playerHand;
           updatedPlayers[pId].currentBid = null;
           updatedPlayers[pId].tricksWon = 0;
+          updatedPlayers[pId].hasDiscarded = false;
         });
 
         const newSirColor = SIR_ROTATION[nextIndex % 4];
-        const startingTurnIndex = nextIndex % roomState.playersOrder.length;
+        const startingTurnIndex = nextIndex % activeState.playersOrder.length;
 
         let startingPhase = 'BIDDING';
         if (isHigh) startingPhase = 'DISCARDING_BEFORE_BID';
 
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, {
+        const updatedRoom = {
+          ...activeState,
           players: updatedPlayers,
           currentRoundIndex: nextIndex,
           sirColor: newSirColor,
@@ -412,18 +414,18 @@
           desk: [],
           currentTurnIndex: startingTurnIndex,
           roundWinnerLog: []
-        });
+        };
+
+        updateRoomState(updatedRoom);
       };
 
-      const submitBid = async (bidValue) => {
-        if (!user) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+      const submitBid = (bidValue) => {
         const updatedPlayers = { ...roomState.players };
-        updatedPlayers[user.uid].currentBid = bidValue;
+        updatedPlayers[myId].currentBid = bidValue;
 
         const nextTurn = (roomState.currentTurnIndex + 1) % roomState.playersOrder.length;
         const allHaveBid = roomState.playersOrder.every(pId => 
-          pId === user.uid ? bidValue !== null : updatedPlayers[pId].currentBid !== null
+          pId === myId ? bidValue !== null : updatedPlayers[pId].currentBid !== null
         );
 
         let nextStatus = roomState.status;
@@ -436,15 +438,15 @@
           }
         }
 
-        await updateDoc(roomRef, {
+        updateRoomState({
+          ...roomState,
           players: updatedPlayers,
           currentTurnIndex: allHaveBid ? 0 : nextTurn,
           status: nextStatus
         });
       };
 
-      const submitDiscards = async () => {
-        if (!user) return;
+      const submitDiscards = () => {
         const targetRound = roomState.roundsList[roomState.currentRoundIndex];
         const isBlind = targetRound === roomState.settings.blindRound;
         const requiredDiscardCount = isBlind ? 3 : 2;
@@ -455,14 +457,14 @@
         }
 
         const updatedPlayers = { ...roomState.players };
-        const myHand = updatedPlayers[user.uid].hand;
+        const myHand = updatedPlayers[myId].hand;
         const discardedIds = selectedCards.map(c => c.id);
 
-        updatedPlayers[user.uid].hand = myHand.filter(card => !discardedIds.includes(card.id));
-        updatedPlayers[user.uid].hasDiscarded = true;
+        updatedPlayers[myId].hand = myHand.filter(card => !discardedIds.includes(card.id));
+        updatedPlayers[myId].hasDiscarded = true;
 
         const allDiscarded = roomState.playersOrder.every(pId => 
-          pId === user.uid ? true : updatedPlayers[pId].hasDiscarded
+          pId === myId ? true : updatedPlayers[pId].hasDiscarded
         );
 
         let nextStatus = roomState.status;
@@ -481,34 +483,32 @@
           }
         }
 
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, {
+        updateRoomState({
+          ...roomState,
           players: updatedPlayers,
           status: nextStatus,
           currentTurnIndex: nextTurnIndex
         });
 
         setSelectedCards([]);
-        showToast("Discards locked in!", "success");
+        showToast("Discards confirmed!", "success");
       };
 
-      const playCard = async (card) => {
-        if (!user) return;
+      const playCard = (card) => {
         const pIdOrder = roomState.playersOrder;
         const myTurnId = pIdOrder[roomState.currentTurnIndex];
-        if (myTurnId !== user.uid) return;
+        if (myTurnId !== myId) return;
 
-        const myHand = roomState.players[user.uid].hand;
+        const myHand = roomState.players[myId].hand;
         if (!isPlayLegal(card, myHand, roomState.leadSuit)) {
           showToast(`Must follow Lead suit (${CARD_SUIT_NAMES[roomState.leadSuit] || roomState.leadSuit}) if possible.`, "error");
           return;
         }
 
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
         const updatedPlayers = { ...roomState.players };
-        updatedPlayers[user.uid].hand = myHand.filter(c => c.id !== card.id);
+        updatedPlayers[myId].hand = myHand.filter(c => c.id !== card.id);
 
-        const newDesk = [...roomState.desk, { playerId: user.uid, card }];
+        const newDesk = [...roomState.desk, { playerId: myId, card }];
         let updatedLeadSuit = roomState.leadSuit;
 
         if (!updatedLeadSuit && card.suit !== 'JOKER') {
@@ -519,7 +519,8 @@
 
         if (!hasTrickEnded) {
           const nextTurnIndex = (roomState.currentTurnIndex + 1) % pIdOrder.length;
-          await updateDoc(roomRef, {
+          updateRoomState({
+            ...roomState,
             players: updatedPlayers,
             desk: newDesk,
             leadSuit: updatedLeadSuit,
@@ -534,10 +535,11 @@
           const logEntry = `${winnerName} won with ${winPlay.card.value}${winPlay.card.suit}`;
           const newLogs = [...(roomState.roundWinnerLog || []), logEntry];
           const nextStarterIndex = pIdOrder.indexOf(winnerId);
-          const roundFinished = updatedPlayers[user.uid].hand.length === 0;
+          const roundFinished = updatedPlayers[myId].hand.length === 0;
 
           if (!roundFinished) {
-            await updateDoc(roomRef, {
+            updateRoomState({
+              ...roomState,
               players: updatedPlayers,
               desk: [],
               leadSuit: null,
@@ -553,7 +555,8 @@
               }
             });
 
-            await updateDoc(roomRef, {
+            updateRoomState({
+              ...roomState,
               players: updatedPlayers,
               desk: newDesk,
               status: 'ROUND_SUMMARY',
@@ -564,13 +567,11 @@
       };
 
       const handleNextRoundProgression = () => {
-        if (!user) return;
         dealNextRound(roomState.currentRoundIndex + 1);
       };
 
-      const resetEntireGame = async () => {
-        if (!user || roomState.hostId !== user.uid) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+      const resetEntireGame = () => {
+        if (roomState.hostId !== myId) return;
         const updatedPlayers = { ...roomState.players };
         roomState.playersOrder.forEach(pId => {
           updatedPlayers[pId].score = 0;
@@ -579,7 +580,8 @@
           updatedPlayers[pId].tricksWon = 0;
         });
 
-        await updateDoc(roomRef, {
+        updateRoomState({
+          ...roomState,
           players: updatedPlayers,
           status: 'LOBBY',
           currentRoundIndex: 0,
@@ -591,7 +593,6 @@
 
       const copyRoomLink = () => {
         const link = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
-        // Standard copy backup for frames
         const tempInput = document.createElement("input");
         tempInput.value = link;
         document.body.appendChild(tempInput);
@@ -618,23 +619,15 @@
         }
       };
 
-      if (!user) {
-        return (
-          <div className="min-h-screen flex items-center justify-center">
-            <div className="flex flex-col items-center space-y-3">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-400"></div>
-              <p className="text-slate-400 font-bold text-sm">Entering Lobby Arena...</p>
-            </div>
-          </div>
-        );
-      }
-
+      // ==========================================
+      // RENDERING MODULES
+      // ==========================================
       return (
-        <div className="min-h-screen flex flex-col justify-between">
+        <div className="min-h-screen flex flex-col justify-between max-w-lg mx-auto px-4 pb- নিরাপদ">
           
-          {/* Toast Notification system */}
+          {/* Dynamic Action Alerts */}
           {toast && (
-            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center space-x-2 px-6 py-3 rounded-full shadow-2xl transition-all border font-bold text-sm ${
+            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center space-x-2 px-6 py-2.5 rounded-full shadow-2xl transition-all border font-bold text-xs ${
               toast.type === 'success' ? 'bg-emerald-500 border-emerald-300 text-slate-950' :
               toast.type === 'error' ? 'bg-rose-500 border-rose-300 text-white' :
               'bg-indigo-600 border-indigo-400 text-white'
@@ -643,20 +636,20 @@
             </div>
           )}
 
-          {/* LOBBY ENTRY SCREEN */}
+          {/* LOBBY / ENTRY NICKNAME MODULE */}
           {(!roomId || !roomState) && (
-            <div className="flex-grow flex flex-col items-center justify-center px-4 py-8 max-w-md mx-auto w-full">
+            <div className="flex-grow flex flex-col items-center justify-center py-12">
               <div className="text-center mb-6">
-                <div className="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl border border-emerald-500/20 mb-3">
-                  <Sparkles size={36} />
+                <div className="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl border border-emerald-500/20 mb-3 animate-pulse">
+                  🃏
                 </div>
-                <h1 className="text-3xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent">JUDGMENT</h1>
-                <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Single-room multiplayer card game</p>
+                <h1 className="text-4xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent tracking-wider">JUDGMENT</h1>
+                <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Free Real-Time Multi-Device Card Table</p>
               </div>
 
               <div className="bg-white/5 border border-white/10 rounded-3xl p-5 shadow-2xl w-full space-y-4">
                 <div className="space-y-1">
-                  <label className="text-[10px] uppercase font-bold text-slate-400">Your Custom Nickname</label>
+                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Your Custom Nickname</label>
                   <input 
                     type="text" 
                     maxLength={12}
@@ -672,13 +665,12 @@
                     onClick={createRoom}
                     className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-black py-3.5 rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 text-sm"
                   >
-                    <Plus size={16} />
-                    <span>Create Room</span>
+                    ➕ Create Fresh Table
                   </button>
 
                   <div className="relative flex py-1 items-center">
                     <div className="flex-grow border-t border-slate-800"></div>
-                    <span className="flex-shrink mx-3 text-[10px] font-black text-slate-500 uppercase">Or Join</span>
+                    <span className="flex-shrink mx-3 text-[10px] font-black text-slate-500 uppercase tracking-widest">Or Join Friends</span>
                     <div className="flex-grow border-t border-slate-800"></div>
                   </div>
 
@@ -688,43 +680,48 @@
                       id="join-code-input"
                       maxLength={5}
                       placeholder="ROOM CODE"
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-center font-black text-sm w-1/2 uppercase focus:outline-none focus:border-amber-500"
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-center font-black text-sm w-1/2 uppercase focus:outline-none focus:border-amber-500 tracking-widest"
                     />
                     <button 
                       onClick={() => joinRoom(document.getElementById('join-code-input').value)}
-                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition-all"
+                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition-all active:scale-95"
                     >
-                      Join
+                      Join Table
                     </button>
                   </div>
                 </div>
               </div>
+
+              {/* Rules banner */}
+              <div className="mt-8 p-4 bg-slate-900/40 border border-slate-800/60 rounded-2xl text-xs text-slate-400 space-y-1">
+                <span className="font-extrabold text-slate-200 block">💡 No-Login Required Setup:</span>
+                <p>Perfect score matches award <span className="text-amber-400 font-bold">10 + Bid</span> points. Win even 1 trick too many or too few, and you score 0. Predict with absolute surgical precision!</p>
+              </div>
             </div>
           )}
 
-          {/* ACTIVE ROOM VIEWPORTS */}
+          {/* ACTIVE GAME SCREENS */}
           {roomId && roomState && (
-            <div className="flex-grow flex flex-col justify-between w-full">
+            <div className="flex-grow flex flex-col justify-between w-full py-4 space-y-4">
               
-              {/* Top persistent game header */}
-              <div className="bg-emerald-950/40 border-b border-emerald-900/60 px-4 py-3 flex justify-between items-center">
+              {/* Persistent Header */}
+              <div className="bg-emerald-950/60 border border-emerald-900/40 rounded-2xl p-3.5 flex justify-between items-center shadow-lg">
                 <div className="flex items-center space-x-2">
-                  <span className="bg-slate-950/80 px-2.5 py-1 rounded-lg text-xs font-black text-amber-400 border border-slate-800">
-                    ROOM: {roomId}
+                  <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-lg text-xs font-black text-amber-400">
+                    CODE: {roomId}
                   </span>
                   <button 
                     onClick={copyRoomLink}
-                    className="p-1.5 bg-white/5 border border-white/5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-colors flex items-center space-x-1 text-xs font-bold"
+                    className="p-1.5 bg-white/5 border border-white/5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-all text-[10px] font-black uppercase tracking-wider"
                   >
-                    <Share2 size={12} />
-                    <span>Share</span>
+                    🔗 Copy Link
                   </button>
                 </div>
 
                 {roomState.status !== 'LOBBY' && roomState.status !== 'GAME_OVER' && (
-                  <div className="flex items-center space-x-3">
-                    <span className="text-xs font-black text-white bg-slate-950/60 px-2 py-1 rounded border border-slate-800">
-                      {roomState.roundsList[roomState.currentRoundIndex]} Cards
+                  <div className="flex items-center space-x-3 text-right">
+                    <span className="bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 text-xs font-black text-slate-200">
+                      Rnd: {roomState.roundsList[roomState.currentRoundIndex]}
                     </span>
                     <span className={`text-xl font-black ${getSuitStyle(roomState.sirColor)}`}>
                       Sir: {roomState.sirColor}
@@ -733,195 +730,194 @@
                 )}
               </div>
 
-              {/* LOBBY / HOST SETTINGS STAGE */}
+              {/* LOBBY RULES SCREEN */}
               {roomState.status === 'LOBBY' && (
-                <div className="flex-grow max-w-md mx-auto w-full p-4 flex flex-col justify-center space-y-6">
-                  <div className="text-center">
-                    <h2 className="text-xl font-black">Configure Rule Settings</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">Host locks parameters before deal starts</p>
+                <div className="flex-grow flex flex-col justify-center space-y-6">
+                  <div className="text-center space-y-1">
+                    <h2 className="text-xl font-black text-slate-100">Establish Table Rules</h2>
+                    <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Host controls deck properties below</p>
                   </div>
 
                   <div className="bg-white/5 border border-white/10 rounded-3xl p-4 space-y-4">
-                    {/* Deck Count */}
+                    {/* Deck count configuration */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Decks Count</span>
-                        <span className="text-[10px] text-slate-400">Total cards multiplies per deck</span>
+                        <span className="text-[10px] text-slate-400">Allows duplicate cards</span>
                       </div>
-                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.deckCount <= 1}
+                          disabled={roomState.hostId !== myId || roomState.settings.deckCount <= 1}
                           onClick={() => updateSettings('deckCount', roomState.settings.deckCount - 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Minus size={14} />
+                          ➖
                         </button>
-                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.deckCount}</span>
+                        <span className="text-xs font-black w-4 text-center">{roomState.settings.deckCount}</span>
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.deckCount >= 3}
+                          disabled={roomState.hostId !== myId || roomState.settings.deckCount >= 3}
                           onClick={() => updateSettings('deckCount', roomState.settings.deckCount + 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Plus size={14} />
+                          ➕
                         </button>
                       </div>
                     </div>
 
-                    {/* Joker Count */}
+                    {/* Jokers config */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Jokers Included</span>
-                        <span className="text-[10px] text-slate-400">Jokers beat everything</span>
+                        <span className="text-[10px] text-slate-400">Jokers beat all Sir cards</span>
                       </div>
-                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.jokerCount <= 0}
+                          disabled={roomState.hostId !== myId || roomState.settings.jokerCount <= 0}
                           onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount - 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Minus size={14} />
+                          ➖
                         </button>
-                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.jokerCount}</span>
+                        <span className="text-xs font-black w-4 text-center">{roomState.settings.jokerCount}</span>
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.jokerCount >= 4}
+                          disabled={roomState.hostId !== myId || roomState.settings.jokerCount >= 4}
                           onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount + 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Plus size={14} />
+                          ➕
                         </button>
                       </div>
                     </div>
 
-                    {/* Max round */}
+                    {/* Peak progressive size */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Max Cards (Peak)</span>
-                        <span className="text-[10px] text-slate-400">Game progressive limit</span>
+                        <span className="text-[10px] text-slate-400">Peak count of deal sequence</span>
                       </div>
-                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.maxRound <= 3}
+                          disabled={roomState.hostId !== myId || roomState.settings.maxRound <= 3}
                           onClick={() => updateSettings('maxRound', roomState.settings.maxRound - 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Minus size={14} />
+                          ➖
                         </button>
-                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.maxRound}</span>
+                        <span className="text-xs font-black w-4 text-center">{roomState.settings.maxRound}</span>
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.maxRound >= 13}
+                          disabled={roomState.hostId !== myId || roomState.settings.maxRound >= 13}
                           onClick={() => updateSettings('maxRound', roomState.settings.maxRound + 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Plus size={14} />
+                          ➕
                         </button>
                       </div>
                     </div>
 
-                    {/* Blind round */}
+                    {/* Blind round setup */}
                     <div className="flex justify-between items-center">
                       <div>
                         <span className="text-xs font-bold block">Custom Blind Round</span>
-                        <span className="text-[10px] text-slate-400">Cards remain face-down</span>
+                        <span className="text-[10px] text-slate-400">Cards bid blind, throw 3</span>
                       </div>
-                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.blindRound <= 1}
+                          disabled={roomState.hostId !== myId || roomState.settings.blindRound <= 1}
                           onClick={() => updateSettings('blindRound', roomState.settings.blindRound - 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Minus size={14} />
+                          ➖
                         </button>
-                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.blindRound}</span>
+                        <span className="text-xs font-black w-4 text-center">{roomState.settings.blindRound}</span>
                         <button 
-                          disabled={roomState.hostId !== user.uid || roomState.settings.blindRound >= roomState.settings.maxRound}
+                          disabled={roomState.hostId !== myId || roomState.settings.blindRound >= roomState.settings.maxRound}
                           onClick={() => updateSettings('blindRound', roomState.settings.blindRound + 1)}
                           className="text-slate-400 disabled:opacity-30"
                         >
-                          <Plus size={14} />
+                          ➕
                         </button>
                       </div>
                     </div>
                   </div>
 
-                  {/* Connected players */}
+                  {/* Connected players grid */}
                   <div className="space-y-2">
-                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block text-center">Connected Players ({roomState.playersOrder.length}/4)</span>
+                    <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 text-center block">Connected Players ({roomState.playersOrder.length}/4)</span>
                     <div className="grid grid-cols-2 gap-2">
                       {roomState.playersOrder.map(pId => {
-                        const isHost = roomState.hostId === pId;
                         const pData = roomState.players[pId];
+                        const isHost = roomState.hostId === pId;
                         return (
-                          <div key={pId} className="p-2.5 bg-slate-950/60 border border-slate-800/60 rounded-xl flex justify-between items-center text-xs font-bold">
+                          <div key={pId} className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl flex justify-between items-center text-xs font-bold">
                             <span className="truncate">{pData.name}</span>
-                            {isHost && <span className="bg-amber-400 text-slate-950 text-[9px] px-1.5 py-0.5 rounded-md font-black">HOST</span>}
+                            {isHost && <span className="bg-amber-400 text-slate-950 text-[9px] px-1.5 py-0.5 rounded font-black">HOST</span>}
                           </div>
                         );
                       })}
                     </div>
                   </div>
 
-                  {roomState.hostId === user.uid ? (
+                  {roomState.hostId === myId ? (
                     <button 
                       onClick={startGame}
-                      className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-black py-3.5 rounded-xl text-sm shadow-lg flex items-center justify-center space-x-1"
+                      className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-black py-4 rounded-xl text-sm shadow-lg flex items-center justify-center space-x-2 active:scale-95 transition-all"
                     >
-                      <Play size={14} fill="currentColor" />
-                      <span>Start Tournament</span>
+                      🚀 Start Grand Game
                     </button>
                   ) : (
-                    <div className="p-3 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold animate-pulse">
-                      Waiting for host to start deal...
+                    <div className="p-4 bg-emerald-950/20 border border-emerald-900/40 rounded-xl text-center text-xs text-emerald-300 font-bold animate-pulse">
+                      Waiting for host to deal cards...
                     </div>
                   )}
                 </div>
               )}
 
-              {/* DISCARD PHASES (Blind and High count) */}
+              {/* CARD DISCARD SEQUENCES (BLIND / HIGH CARD ROUNDS) */}
               {(roomState.status === 'DISCARDING_BEFORE_BID' || roomState.status === 'DISCARDING_AFTER_BID') && (
-                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
+                <div className="flex-grow flex flex-col justify-between space-y-4">
                   <div className="text-center space-y-1">
-                    <span className="inline-block bg-amber-400/10 text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-amber-400/20 uppercase tracking-widest">
+                    <span className="bg-amber-400/10 border border-amber-400/20 text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider block mx-auto w-max">
                       {roomState.status === 'DISCARDING_BEFORE_BID' ? 'Pre-Bid Discard' : 'Post-Bid Discard'}
                     </span>
-                    <h2 className="text-lg font-black">
+                    <h2 className="text-xl font-black">
                       {roomState.status === 'DISCARDING_BEFORE_BID' ? 'Discard exactly 2 cards' : 'Discard exactly 3 cards'}
                     </h2>
-                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                    <p className="text-[10px] text-slate-400 leading-relaxed max-w-xs mx-auto">
                       {roomState.status === 'DISCARDING_BEFORE_BID' 
-                        ? 'Strategic round deal active. Ditch unwanted cards before placing bids!' 
-                        : 'You bid blind! Now clean your hand to match the round target size.'}
+                        ? 'High card strategic round active. Mold your hand before declaring bids!' 
+                        : 'Blind bids locked. Drop 3 unwanted cards from your hand before tricks commence.'}
                     </p>
                   </div>
 
-                  {/* Opponent Wait Indicators */}
+                  {/* Opponent indicators */}
                   <div className="grid grid-cols-4 gap-2">
                     {roomState.playersOrder.map(id => {
                       const p = roomState.players[id];
                       return (
-                        <div key={id} className="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800 text-center text-[10px] font-bold">
+                        <div key={id} className="p-2 rounded-xl bg-slate-950 border border-slate-800/80 text-center text-[10px] font-bold">
                           <span className="truncate block text-slate-300">{p.name}</span>
-                          <span className={`block mt-0.5 ${p.hasDiscarded ? 'text-emerald-400' : 'text-slate-600'}`}>
-                            {p.hasDiscarded ? 'Ready' : 'Wait'}
+                          <span className={`block mt-0.5 font-black text-[9px] ${p.hasDiscarded ? 'text-emerald-400' : 'text-slate-600'}`}>
+                            {p.hasDiscarded ? 'READY' : 'WAIT'}
                           </span>
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Interactive card selector */}
-                  <div className="space-y-4 flex-1 flex flex-col justify-center">
+                  {/* Hand panel with overlapping selectors */}
+                  <div className="space-y-4">
                     <span className="text-[10px] uppercase font-black text-center text-slate-400 tracking-wider block">
-                      Select cards to discard ({selectedCards.length} / {roomState.status === 'DISCARDING_BEFORE_BID' ? '2' : '3'})
+                      Tap cards to throw away ({selectedCards.length} / {roomState.status === 'DISCARDING_BEFORE_BID' ? '2' : '3'})
                     </span>
 
-                    <div className="flex justify-center items-center overflow-x-auto py-4 px-6 min-h-[140px] custom-scroll">
-                      {roomState.players[user.uid]?.hand.map((card, index) => {
+                    <div className="flex justify-center items-center overflow-x-auto py-6 px-12 min-h-[140px] custom-scroll">
+                      {roomState.players[myId]?.hand.map((card, index) => {
                         const isSelected = selectedCards.some(c => c.id === card.id);
                         return (
                           <div
                             key={card.id || index}
                             onClick={() => toggleCardSelection(card)}
-                            className={`w-16 h-24 rounded-xl flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all cursor-pointer bg-white text-slate-950 ${
+                            className={`w-14 h-22 rounded-xl flex flex-col justify-between p-2 font-black shadow-2xl transform border transition-all cursor-pointer bg-white text-slate-950 ${
                               isSelected 
                                 ? '-translate-y-8 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)]' 
                                 : 'border-slate-300 hover:-translate-y-3'
@@ -938,10 +934,6 @@
                             <div className={`text-2xl self-center ${getSuitStyle(card.suit)}`}>
                               {card.suit}
                             </div>
-                            <div className="flex justify-between items-start w-full transform rotate-180 leading-none">
-                              <span className="text-xs">{card.value}</span>
-                              <span className={`text-sm ${getSuitStyle(card.suit)}`}>{card.suit}</span>
-                            </div>
                           </div>
                         );
                       })}
@@ -950,7 +942,7 @@
                     <button 
                       onClick={submitDiscards}
                       disabled={selectedCards.length !== (roomState.status === 'DISCARDING_BEFORE_BID' ? 2 : 3)}
-                      className="w-full bg-gradient-to-r from-amber-400 to-amber-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 font-black py-3 rounded-xl shadow text-sm transition-all"
+                      className="w-full bg-gradient-to-r from-amber-400 to-amber-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 font-black py-3.5 rounded-xl shadow text-sm transition-all"
                     >
                       Confirm Selection
                     </button>
@@ -958,25 +950,25 @@
                 </div>
               )}
 
-              {/* BIDDING SELECTION TIMELINE */}
+              {/* BIDDING DECLARATION INTERFACE */}
               {roomState.status === 'BIDDING' && (
-                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
-                  <div className="text-center space-y-1">
-                    <span className="inline-block bg-emerald-500/10 text-emerald-400 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20 uppercase tracking-widest">
-                      Bidding Phase
+                <div className="flex-grow flex flex-col justify-between space-y-4">
+                  <div className="text-center">
+                    <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider block mx-auto w-max">
+                      Bidding Stage
                     </span>
-                    <h2 className="text-lg font-black flex items-center justify-center space-x-1.5">
-                      <span>{roomState.roundsList[roomState.currentRoundIndex] === roomState.settings.blindRound ? 'Blind Prediction' : 'Predict Your Score'}</span>
+                    <h2 className="text-lg font-black mt-2">
+                      {roomState.roundsList[roomState.currentRoundIndex] === roomState.settings.blindRound ? '🙈 Blind Prediction' : 'Predict Tricks Count'}
                     </h2>
                   </div>
 
-                  {/* Bids Status Matrix */}
+                  {/* Bids live board */}
                   <div className="grid grid-cols-4 gap-2">
                     {roomState.playersOrder.map(pId => {
                       const p = roomState.players[pId];
                       const isTurn = pId === roomState.playersOrder[roomState.currentTurnIndex];
                       return (
-                        <div key={pId} className={`p-2 rounded-xl border text-center ${isTurn ? 'bg-amber-500/10 border-amber-400 animate-pulse' : 'bg-slate-950/60 border-slate-800'}`}>
+                        <div key={pId} className={`p-2.5 rounded-xl border text-center ${isTurn ? 'bg-amber-500/10 border-amber-400 animate-pulse' : 'bg-slate-950 border-slate-800'}`}>
                           <span className="text-[10px] font-bold text-slate-300 block truncate">{p.name}</span>
                           <span className="text-xs font-black text-amber-300 mt-0.5 block">
                             {p.currentBid !== null ? `Bid: ${p.currentBid}` : 'Wait'}
@@ -986,17 +978,17 @@
                     })}
                   </div>
 
-                  {/* Interactive Button Panel */}
+                  {/* Bid Button grid selector */}
                   <div className="flex-1 flex flex-col justify-center items-center bg-black/15 border border-white/5 rounded-2xl p-4">
-                    {roomState.players[user.uid]?.currentBid !== null ? (
+                    {roomState.players[myId]?.currentBid !== null ? (
                       <div className="text-center space-y-1">
-                        <span className="text-[10px] uppercase text-slate-500 font-bold block">Locked prediction</span>
-                        <span className="text-3xl font-black text-emerald-400">BID: {roomState.players[user.uid].currentBid}</span>
-                        <span className="text-[10px] text-slate-400 block pt-2">Waiting for matches...</span>
+                        <span className="text-[10px] uppercase text-slate-500 font-bold block">My Prediction Locked</span>
+                        <span className="text-3xl font-black text-emerald-400">BID: {roomState.players[myId].currentBid}</span>
+                        <span className="text-[10px] text-slate-400 block pt-2">Waiting for opponents...</span>
                       </div>
-                    ) : user.uid === roomState.playersOrder[roomState.currentTurnIndex] ? (
+                    ) : myId === roomState.playersOrder[roomState.currentTurnIndex] ? (
                       <div className="text-center w-full">
-                        <span className="text-[10px] uppercase font-bold text-amber-400 block mb-3">Choose tricks prediction</span>
+                        <span className="text-[10px] uppercase font-bold text-amber-400 block mb-3">Choose predictions count</span>
                         <div className="flex flex-wrap justify-center gap-1.5">
                           {Array.from({ length: roomState.roundsList[roomState.currentRoundIndex] + 1 }, (_, i) => i).map((num) => (
                             <button
@@ -1014,11 +1006,11 @@
                     )}
                   </div>
 
-                  {/* Player Hand View */}
+                  {/* Player Hand Fan (Visible / Blind locked backs) */}
                   <div className="bg-slate-950/60 rounded-2xl p-4 border border-slate-800">
-                    <span className="text-[9px] uppercase font-bold text-slate-400 block text-center mb-2">Your Hand</span>
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block text-center mb-2">My Hand</span>
                     <div className="flex justify-center items-center overflow-x-auto min-h-[100px] px-6 custom-scroll">
-                      {roomState.players[user.uid]?.hand.map((card, index) => {
+                      {roomState.players[myId]?.hand.map((card, index) => {
                         const isBlind = roomState.roundsList[roomState.currentRoundIndex] === roomState.settings.blindRound;
                         return (
                           <div
@@ -1054,17 +1046,17 @@
                 </div>
               )}
 
-              {/* MAIN TRICKS PLAYING SCREEN */}
+              {/* TABLE TRICKS CORE ENGINE */}
               {roomState.status === 'PLAYING' && (
-                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
+                <div className="flex-grow flex flex-col justify-between space-y-4">
                   
-                  {/* Scoreboard compact HUD */}
+                  {/* Miniature Scoreboard Tracker HUD */}
                   <div className="grid grid-cols-4 gap-2">
                     {roomState.playersOrder.map(id => {
                       const p = roomState.players[id];
                       const isTurn = id === roomState.playersOrder[roomState.currentTurnIndex];
                       return (
-                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400' : 'bg-slate-950/40 border-slate-800'}`}>
+                        <div key={id} className={`p-2 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400' : 'bg-slate-950/40 border-slate-800'}`}>
                           <span className="font-bold block truncate text-slate-300">{p.name}</span>
                           <span className="font-black text-white block mt-0.5">
                             {p.tricksWon}/{p.currentBid}
@@ -1074,12 +1066,12 @@
                     })}
                   </div>
 
-                  {/* Main board felt */}
+                  {/* Felt table middle */}
                   <div className="flex-1 bg-gradient-to-b from-emerald-900 via-emerald-950 to-emerald-900/60 border border-emerald-800/60 rounded-3xl p-4 flex flex-col justify-between relative min-h-[220px]">
                     <div className="flex justify-between text-[10px] border-b border-emerald-900 pb-2">
                       <span className="text-emerald-300">Lead Suit: {roomState.leadSuit ? CARD_SUIT_NAMES[roomState.leadSuit] : 'None'}</span>
                       <span className="text-amber-400 font-bold">
-                        {roomState.playersOrder[roomState.currentTurnIndex] === user.uid ? 'YOUR TURN' : 'Opponent Turn'}
+                        {roomState.playersOrder[roomState.currentTurnIndex] === myId ? '👉 YOUR TURN!' : 'WAITING FOR OPponent'}
                       </span>
                     </div>
 
@@ -1101,25 +1093,25 @@
                           </div>
                         ))
                       ) : (
-                        <div className="text-[10px] text-emerald-500/50 uppercase tracking-widest text-center py-6">Play a card</div>
+                        <div className="text-[10px] text-emerald-500/40 uppercase tracking-widest text-center py-6">Play a card</div>
                       )}
                     </div>
 
                     {/* Logs ticker */}
                     <div className="text-[9px] text-slate-400 text-center italic mt-1">
                       {roomState.roundWinnerLog && roomState.roundWinnerLog.length > 0 
-                        ? `Last trick: ${roomState.roundWinnerLog[roomState.roundWinnerLog.length - 1]}` 
+                        ? `Last trick won by: ${roomState.roundWinnerLog[roomState.roundWinnerLog.length - 1]}` 
                         : 'No tricks played yet.'}
                     </div>
                   </div>
 
-                  {/* Interactive Hand panel */}
+                  {/* Playable card selector container */}
                   <div className="space-y-2">
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block text-center">Your playable hand</span>
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block text-center">Tap a card to play legally</span>
                     <div className="flex justify-center items-center overflow-x-auto min-h-[110px] px-6 custom-scroll">
-                      {roomState.players[user.uid]?.hand.map((card, index) => {
-                        const isMyTurn = roomState.playersOrder[roomState.currentTurnIndex] === user.uid;
-                        const legal = isPlayLegal(card, roomState.players[user.uid].hand, roomState.leadSuit);
+                      {roomState.players[myId]?.hand.map((card, index) => {
+                        const isMyTurn = roomState.playersOrder[roomState.currentTurnIndex] === myId;
+                        const legal = isPlayLegal(card, roomState.players[myId].hand, roomState.leadSuit);
                         return (
                           <div
                             key={card.id || index}
@@ -1129,7 +1121,7 @@
                             className={`w-14 h-20 rounded-lg flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all ${
                               !isMyTurn ? 'bg-slate-300 text-slate-600 border-slate-400 cursor-not-allowed' :
                               !legal ? 'bg-rose-100 opacity-40 cursor-not-allowed' :
-                              'bg-white text-slate-950 border-slate-200 -translate-y-1 hover:-translate-y-4'
+                              'bg-white text-slate-950 border-slate-200 -translate-y-1 hover:-translate-y-4 cursor-pointer'
                             }`}
                             style={{
                               marginLeft: index === 0 ? '0px' : '-16px',
@@ -1151,12 +1143,12 @@
                 </div>
               )}
 
-              {/* ROUND SUMMARY SCOREBOARD SCREEN */}
+              {/* ROUND SCOREBOARD SUMMARY SCREEN */}
               {roomState.status === 'ROUND_SUMMARY' && (
-                <div className="flex-grow p-4 flex flex-col justify-center max-w-md mx-auto w-full space-y-6">
+                <div className="flex-grow flex flex-col justify-center space-y-6">
                   <div className="text-center">
-                    <span className="text-[10px] font-black bg-amber-400/10 border border-amber-400/20 text-amber-300 px-3 py-1 rounded-full uppercase">Round Finished</span>
-                    <h2 className="text-xl font-black mt-2">Scoreboard Breakdown</h2>
+                    <span className="text-[10px] font-black bg-amber-400/10 border border-amber-400/20 text-amber-300 px-3 py-1 rounded-full uppercase">Round Complete</span>
+                    <h2 className="text-xl font-black mt-2">Scoreboard Summary</h2>
                   </div>
 
                   <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden shadow-xl">
@@ -1188,13 +1180,13 @@
                     </table>
                   </div>
 
-                  {roomState.hostId === user.uid ? (
+                  {roomState.hostId === myId ? (
                     <button 
                       onClick={handleNextRoundProgression}
-                      className="w-full bg-gradient-to-r from-emerald-400 to-teal-500 text-slate-950 font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-1 animate-pulse"
+                      className="w-full bg-gradient-to-r from-emerald-400 to-teal-500 text-slate-950 font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-2 animate-pulse"
                     >
-                      <span>Proceed to Next Round</span>
-                      <ArrowRight size={14} />
+                      <span>Deal Next Round</span>
+                      <span>➡️</span>
                     </button>
                   ) : (
                     <div className="p-3 bg-emerald-950/20 border border-emerald-900/40 rounded-xl text-center text-xs text-emerald-300 font-bold">
@@ -1204,14 +1196,12 @@
                 </div>
               )}
 
-              {/* GAME OVER TIMELINE */}
+              {/* GAME OVER (WINNERS PODIUM) */}
               {roomState.status === 'GAME_OVER' && (
-                <div className="flex-grow p-4 flex flex-col justify-center max-w-md mx-auto w-full space-y-6">
+                <div className="flex-grow flex flex-col justify-center space-y-6">
                   <div className="text-center space-y-2">
-                    <div className="inline-flex p-3 bg-amber-500/10 text-amber-400 rounded-2xl border border-amber-500/20 animate-bounce">
-                      <Trophy size={36} />
-                    </div>
-                    <h2 className="text-2xl font-black bg-gradient-to-r from-amber-400 to-yellow-300 bg-clip-text text-transparent">Tournament Completed!</h2>
+                    <span className="text-3xl">🏆</span>
+                    <h2 className="text-2xl font-black bg-gradient-to-r from-amber-400 to-yellow-300 bg-clip-text text-transparent">Tournament Complete!</h2>
                   </div>
 
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3 shadow-xl">
@@ -1226,26 +1216,20 @@
                       ))}
                   </div>
 
-                  {roomState.hostId === user.uid ? (
+                  {roomState.hostId === myId ? (
                     <button 
                       onClick={resetEntireGame}
-                      className="w-full bg-slate-800 text-white font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-1"
+                      className="w-full bg-slate-800 text-white font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-2 active:scale-95 transition-all"
                     >
-                      <RotateCcw size={14} />
-                      <span>Restart Tournament</span>
+                      🔄 Restart Tournament
                     </button>
                   ) : (
                     <div className="p-3 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold">
-                      Waiting for host to restart another tournament...
+                      Waiting for host to restart tournament...
                     </div>
                   )}
                 </div>
               )}
-
-              {/* Small copyright marker */}
-              <div className="text-center py-3 text-[9px] text-slate-700 bg-slate-950/40 mt-auto border-t border-slate-900">
-                Judgment Multiplayer Mobile Setup. Hosted via Vercel Serverless.
-              </div>
 
             </div>
           )}
@@ -1253,8 +1237,8 @@
       );
     }
 
-    // Initialize DOM Mounting
-    const root = createRoot(document.getElementById('root'));
+    // Mount Root node
+    const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(React.createElement(App));
   </script>
 </body>
