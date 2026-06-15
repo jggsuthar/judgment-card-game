@@ -1,0 +1,1262 @@
+html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Judgment - Multiplayer Prediction Card Game</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Custom scrollbar and overlapping card animations */
+    .custom-scroll::-webkit-scrollbar {
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: rgba(0,0,0,0.1);
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.2);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-emerald-950 via-stone-900 to-stone-950 text-white font-sans min-h-screen">
+
+  <div id="root"></div>
+
+  <!-- ES Module Loader directly in browser -->
+  <script type="module">
+    import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+    import { initializeApp } from 'https://esm.sh/firebase@10.8.0/app';
+    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://esm.sh/firebase@10.8.0/auth';
+    import { getFirestore, doc, setDoc, onSnapshot, updateDoc } from 'https://esm.sh/firebase@10.8.0/firestore';
+    import { 
+      Share2, Copy, Users, Plus, Minus, Play, Settings, RotateCcw, 
+      CheckCircle, AlertCircle, Trophy, ArrowRight, Sparkles, HelpCircle 
+    } from 'https://esm.sh/lucide-react@0.344.0';
+
+    // ==========================================
+    // 1. FIREBASE CONFIGURATION
+    // ==========================================
+    const firebaseConfig = {
+      apiKey: "", // Filled automatically by runtime execution environments
+      authDomain: "judgment-game-canvas.firebaseapp.com",
+      projectId: "judgment-game-canvas",
+      storageBucket: "judgment-game-canvas.appspot.com",
+      messagingSenderId: "305191147572",
+      appId: "1:305191147572:web:945fe6df5014cc62a93901"
+    };
+
+    const activeConfig = typeof __firebase_config !== 'undefined' 
+      ? JSON.parse(__firebase_config) 
+      : firebaseConfig;
+
+    const app = initializeApp(activeConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'judgment-mp-v1';
+
+    const SIR_ROTATION = ['♠', '♦', '♣', '♥'];
+    const CARD_SUIT_NAMES = { '♠': 'Spades', '♦': 'Diamonds', '♣': 'Clubs', '♥': 'Hearts' };
+
+    // ==========================================
+    // 2. GAME DECK AND MATH UTILITIES
+    // ==========================================
+    function createDeck(deckCount, jokerCount) {
+      const suits = ['♠', '♦', '♣', '♥'];
+      const values = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+      let deck = [];
+
+      for (let d = 0; d < deckCount; d++) {
+        for (let suit of suits) {
+          for (let val of values) {
+            deck.push({ suit, value: val, id: `deck-${d}-${suit}-${val}` });
+          }
+        }
+      }
+
+      for (let j = 0; j < jokerCount; j++) {
+        deck.push({ suit: 'JOKER', value: '🃏', id: `joker-${j}` });
+      }
+
+      for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+      }
+      return deck;
+    }
+
+    function getCardWeight(value) {
+      const weights = { 
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 
+        'J': 11, 'Q': 12, 'K': 13, 'A': 14 
+      };
+      return weights[value] || 0;
+    }
+
+    function calculateTrickWinner(desk, sirColor, leadSuit) {
+      if (desk.length === 0) return null;
+      let winningPlay = desk;
+
+      for (let i = 1; i < desk.length; i++) {
+        const currentPlay = desk[i];
+        const bestCard = winningPlay.card;
+        const currentCard = currentPlay.card;
+
+        if (currentCard.suit === 'JOKER') {
+          if (bestCard.suit !== 'JOKER' || i >= 0) {
+            winningPlay = currentPlay;
+            continue;
+          }
+        }
+        if (bestCard.suit === 'JOKER') continue;
+
+        if (currentCard.suit === sirColor) {
+          if (bestCard.suit !== sirColor) {
+            winningPlay = currentPlay;
+          } else {
+            if (getCardWeight(currentCard.value) >= getCardWeight(bestCard.value)) {
+              winningPlay = currentPlay;
+            }
+          }
+          continue;
+        }
+        if (bestCard.suit === sirColor) continue;
+
+        if (currentCard.suit === leadSuit) {
+          if (bestCard.suit !== leadSuit) {
+            winningPlay = currentPlay;
+          } else {
+            if (getCardWeight(currentCard.value) >= getCardWeight(bestCard.value)) {
+              winningPlay = currentPlay;
+            }
+          }
+        }
+      }
+      return winningPlay;
+    }
+
+    function isPlayLegal(card, hand, leadSuit) {
+      if (!leadSuit) return true;
+      if (card.suit === 'JOKER') return true;
+      const hasLeadSuit = hand.some(c => c.suit === leadSuit && c.suit !== 'JOKER');
+      if (hasLeadSuit) {
+        return card.suit === leadSuit;
+      }
+      return true;
+    }
+
+    const getSuitStyle = (suit) => {
+      if (suit === '♥' || suit === '♦') return 'text-red-500';
+      if (suit === '♠' || suit === '♣') return 'text-slate-200';
+      return 'text-amber-400';
+    };
+
+    // ==========================================
+    // 3. MAIN COMPONENT
+    // ==========================================
+    function App() {
+      const [user, setUser] = useState(null);
+      const [roomId, setRoomId] = useState('');
+      const [nickname, setNickname] = useState('');
+      const [roomState, setRoomState] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [selectedCards, setSelectedCards] = useState([]);
+
+      const showToast = (message, type = 'info') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 4000);
+      };
+
+      useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const urlRoom = params.get('room');
+        if (urlRoom) setRoomId(urlRoom.toUpperCase());
+
+        const savedNickname = localStorage.getItem('judgment_nickname');
+        if (savedNickname) setNickname(savedNickname);
+      }, []);
+
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            await signInAnonymously(auth);
+          } catch (err) {
+            console.error("Auth failed:", err);
+            showToast("Server connecting error. Please refresh.", "error");
+          }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, (currUser) => {
+          if (currUser) setUser(currUser);
+        });
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!user || !roomId) return;
+
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+          if (snapshot.exists()) {
+            setRoomState(snapshot.data());
+          } else {
+            setRoomState(null);
+          }
+        }, (error) => {
+          console.error("Firestore sync error:", error);
+          showToast("Lost synchronization. Reconnecting...", "error");
+        });
+
+        return () => unsubscribe();
+      }, [user, roomId]);
+
+      useEffect(() => {
+        setSelectedCards([]);
+      }, [roomState?.status]);
+
+      // ACTIONS
+      const createRoom = async () => {
+        if (!user) return;
+        if (!nickname.trim()) {
+          showToast("Please enter a nickname first!", "error");
+          return;
+        }
+        const generatedId = Math.random().toString(36).substring(2, 7).toUpperCase();
+        localStorage.setItem('judgment_nickname', nickname);
+
+        const initialRoom = {
+          id: generatedId,
+          status: 'LOBBY',
+          hostId: user.uid,
+          playersOrder: [user.uid],
+          players: {
+            [user.uid]: {
+              id: user.uid,
+              name: nickname,
+              score: 0,
+              currentBid: null,
+              tricksWon: 0,
+              hand: [],
+              active: true,
+              lastActive: Date.now()
+            }
+          },
+          settings: {
+            deckCount: 1,
+            jokerCount: 0,
+            maxRound: 10,
+            blindRound: 10
+          },
+          currentRoundIndex: 0,
+          roundsList: [],
+          sirColor: '♠',
+          leadSuit: null,
+          desk: [],
+          bidsCount: 0,
+          currentTurnIndex: 0,
+          roundWinnerLog: []
+        };
+
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', generatedId), initialRoom);
+          setRoomId(generatedId);
+          window.history.pushState(null, '', `?room=${generatedId}`);
+          showToast("Room created! Send link to friends.", "success");
+        } catch (err) {
+          console.error(err);
+          showToast("Failed to create room.", "error");
+        }
+      };
+
+      const joinRoom = async (targetId) => {
+        if (!user) return;
+        if (!nickname.trim()) {
+          showToast("Please set a nickname first!", "error");
+          return;
+        }
+        const cleanId = targetId.trim().toUpperCase();
+        if (!cleanId) return;
+
+        localStorage.setItem('judgment_nickname', nickname);
+
+        try {
+          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', cleanId);
+          await setDoc(roomRef, {}, { merge: true });
+
+          onSnapshot(roomRef, async (snap) => {
+            if (!snap.exists()) {
+              showToast("Room not found.", "error");
+              return;
+            }
+            const data = snap.data();
+            if (data.status !== 'LOBBY' && !data.players[user.uid]) {
+              showToast("Game already in progress!", "error");
+              return;
+            }
+            if (Object.keys(data.players).length >= 4 && !data.players[user.uid]) {
+              showToast("Room is full! Max 4 players.", "error");
+              return;
+            }
+
+            const updatedPlayers = { ...data.players };
+            const updatedOrder = [...(data.playersOrder || [])];
+
+            if (!updatedPlayers[user.uid]) {
+              updatedPlayers[user.uid] = {
+                id: user.uid,
+                name: nickname,
+                score: 0,
+                currentBid: null,
+                tricksWon: 0,
+                hand: [],
+                active: true,
+                lastActive: Date.now()
+              };
+              updatedOrder.push(user.uid);
+            } else {
+              updatedPlayers[user.uid].active = true;
+              updatedPlayers[user.uid].name = nickname;
+            }
+
+            await updateDoc(roomRef, {
+              players: updatedPlayers,
+              playersOrder: updatedOrder
+            });
+
+            setRoomId(cleanId);
+            window.history.pushState(null, '', `?room=${cleanId}`);
+          }, { onlyOnce: true });
+
+        } catch (err) {
+          console.error(err);
+          showToast("Failed to join room.", "error");
+        }
+      };
+
+      const updateSettings = async (key, value) => {
+        if (!user || roomState.hostId !== user.uid) return;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, { [`settings.${key}`]: value });
+      };
+
+      const startGame = async () => {
+        if (!user || roomState.hostId !== user.uid) return;
+        if (roomState.playersOrder.length < 2) {
+          showToast("Need at least 2 players to start!", "error");
+          return;
+        }
+
+        const { maxRound } = roomState.settings;
+        let rounds = [];
+        for (let i = 1; i <= maxRound; i++) rounds.push(i);
+        for (let i = maxRound - 1; i >= 1; i--) rounds.push(i);
+
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, {
+          roundsList: rounds,
+          currentRoundIndex: 0,
+          status: 'PRE_ROUND_DEAL'
+        });
+
+        dealNextRound(0, rounds);
+      };
+
+      const dealNextRound = async (nextIndex, customRoundsList) => {
+        if (!user) return;
+        const list = customRoundsList || roomState.roundsList;
+        if (nextIndex >= list.length) {
+          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+          await updateDoc(roomRef, { status: 'GAME_OVER' });
+          return;
+        }
+
+        const roundTargetCount = list[nextIndex];
+        const isBlind = roundTargetCount === roomState.settings.blindRound;
+        const isHigh = roundTargetCount > 10;
+
+        let dealCount = roundTargetCount;
+        if (isBlind) {
+          dealCount = roundTargetCount + 3;
+        } else if (isHigh) {
+          dealCount = roundTargetCount + 2;
+        }
+
+        const masterDeck = createDeck(roomState.settings.deckCount, roomState.settings.jokerCount);
+        const updatedPlayers = { ...roomState.players };
+
+        roomState.playersOrder.forEach((pId) => {
+          const playerHand = [];
+          for (let i = 0; i < dealCount; i++) {
+            if (masterDeck.length > 0) playerHand.push(masterDeck.pop());
+          }
+          updatedPlayers[pId].hand = playerHand;
+          updatedPlayers[pId].currentBid = null;
+          updatedPlayers[pId].tricksWon = 0;
+        });
+
+        const newSirColor = SIR_ROTATION[nextIndex % 4];
+        const startingTurnIndex = nextIndex % roomState.playersOrder.length;
+
+        let startingPhase = 'BIDDING';
+        if (isHigh) startingPhase = 'DISCARDING_BEFORE_BID';
+
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, {
+          players: updatedPlayers,
+          currentRoundIndex: nextIndex,
+          sirColor: newSirColor,
+          status: startingPhase,
+          leadSuit: null,
+          desk: [],
+          currentTurnIndex: startingTurnIndex,
+          roundWinnerLog: []
+        });
+      };
+
+      const submitBid = async (bidValue) => {
+        if (!user) return;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const updatedPlayers = { ...roomState.players };
+        updatedPlayers[user.uid].currentBid = bidValue;
+
+        const nextTurn = (roomState.currentTurnIndex + 1) % roomState.playersOrder.length;
+        const allHaveBid = roomState.playersOrder.every(pId => 
+          pId === user.uid ? bidValue !== null : updatedPlayers[pId].currentBid !== null
+        );
+
+        let nextStatus = roomState.status;
+        if (allHaveBid) {
+          const activeRoundTarget = roomState.roundsList[roomState.currentRoundIndex];
+          if (activeRoundTarget === roomState.settings.blindRound) {
+            nextStatus = 'DISCARDING_AFTER_BID';
+          } else {
+            nextStatus = 'PLAYING';
+          }
+        }
+
+        await updateDoc(roomRef, {
+          players: updatedPlayers,
+          currentTurnIndex: allHaveBid ? 0 : nextTurn,
+          status: nextStatus
+        });
+      };
+
+      const submitDiscards = async () => {
+        if (!user) return;
+        const targetRound = roomState.roundsList[roomState.currentRoundIndex];
+        const isBlind = targetRound === roomState.settings.blindRound;
+        const requiredDiscardCount = isBlind ? 3 : 2;
+
+        if (selectedCards.length !== requiredDiscardCount) {
+          showToast(`Select exactly ${requiredDiscardCount} cards to discard!`, "error");
+          return;
+        }
+
+        const updatedPlayers = { ...roomState.players };
+        const myHand = updatedPlayers[user.uid].hand;
+        const discardedIds = selectedCards.map(c => c.id);
+
+        updatedPlayers[user.uid].hand = myHand.filter(card => !discardedIds.includes(card.id));
+        updatedPlayers[user.uid].hasDiscarded = true;
+
+        const allDiscarded = roomState.playersOrder.every(pId => 
+          pId === user.uid ? true : updatedPlayers[pId].hasDiscarded
+        );
+
+        let nextStatus = roomState.status;
+        let nextTurnIndex = roomState.currentTurnIndex;
+
+        if (allDiscarded) {
+          roomState.playersOrder.forEach(pId => {
+            updatedPlayers[pId].hasDiscarded = false;
+          });
+
+          if (roomState.status === 'DISCARDING_BEFORE_BID') {
+            nextStatus = 'BIDDING';
+          } else if (roomState.status === 'DISCARDING_AFTER_BID') {
+            nextStatus = 'PLAYING';
+            nextTurnIndex = 0;
+          }
+        }
+
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, {
+          players: updatedPlayers,
+          status: nextStatus,
+          currentTurnIndex: nextTurnIndex
+        });
+
+        setSelectedCards([]);
+        showToast("Discards locked in!", "success");
+      };
+
+      const playCard = async (card) => {
+        if (!user) return;
+        const pIdOrder = roomState.playersOrder;
+        const myTurnId = pIdOrder[roomState.currentTurnIndex];
+        if (myTurnId !== user.uid) return;
+
+        const myHand = roomState.players[user.uid].hand;
+        if (!isPlayLegal(card, myHand, roomState.leadSuit)) {
+          showToast(`Must follow Lead suit (${CARD_SUIT_NAMES[roomState.leadSuit] || roomState.leadSuit}) if possible.`, "error");
+          return;
+        }
+
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const updatedPlayers = { ...roomState.players };
+        updatedPlayers[user.uid].hand = myHand.filter(c => c.id !== card.id);
+
+        const newDesk = [...roomState.desk, { playerId: user.uid, card }];
+        let updatedLeadSuit = roomState.leadSuit;
+
+        if (!updatedLeadSuit && card.suit !== 'JOKER') {
+          updatedLeadSuit = card.suit;
+        }
+
+        const hasTrickEnded = newDesk.length === pIdOrder.length;
+
+        if (!hasTrickEnded) {
+          const nextTurnIndex = (roomState.currentTurnIndex + 1) % pIdOrder.length;
+          await updateDoc(roomRef, {
+            players: updatedPlayers,
+            desk: newDesk,
+            leadSuit: updatedLeadSuit,
+            currentTurnIndex: nextTurnIndex
+          });
+        } else {
+          const winPlay = calculateTrickWinner(newDesk, roomState.sirColor, updatedLeadSuit);
+          const winnerId = winPlay.playerId;
+          updatedPlayers[winnerId].tricksWon += 1;
+
+          const winnerName = updatedPlayers[winnerId].name;
+          const logEntry = `${winnerName} won with ${winPlay.card.value}${winPlay.card.suit}`;
+          const newLogs = [...(roomState.roundWinnerLog || []), logEntry];
+          const nextStarterIndex = pIdOrder.indexOf(winnerId);
+          const roundFinished = updatedPlayers[user.uid].hand.length === 0;
+
+          if (!roundFinished) {
+            await updateDoc(roomRef, {
+              players: updatedPlayers,
+              desk: [],
+              leadSuit: null,
+              currentTurnIndex: nextStarterIndex,
+              roundWinnerLog: newLogs
+            });
+            showToast(`${winnerName} wins the trick!`, "success");
+          } else {
+            pIdOrder.forEach(id => {
+              const p = updatedPlayers[id];
+              if (p.currentBid === p.tricksWon) {
+                p.score += (10 + p.currentBid);
+              }
+            });
+
+            await updateDoc(roomRef, {
+              players: updatedPlayers,
+              desk: newDesk,
+              status: 'ROUND_SUMMARY',
+              roundWinnerLog: newLogs
+            });
+          }
+        }
+      };
+
+      const handleNextRoundProgression = () => {
+        if (!user) return;
+        dealNextRound(roomState.currentRoundIndex + 1);
+      };
+
+      const resetEntireGame = async () => {
+        if (!user || roomState.hostId !== user.uid) return;
+        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const updatedPlayers = { ...roomState.players };
+        roomState.playersOrder.forEach(pId => {
+          updatedPlayers[pId].score = 0;
+          updatedPlayers[pId].hand = [];
+          updatedPlayers[pId].currentBid = null;
+          updatedPlayers[pId].tricksWon = 0;
+        });
+
+        await updateDoc(roomRef, {
+          players: updatedPlayers,
+          status: 'LOBBY',
+          currentRoundIndex: 0,
+          roundsList: [],
+          desk: [],
+          leadSuit: null
+        });
+      };
+
+      const copyRoomLink = () => {
+        const link = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+        // Standard copy backup for frames
+        const tempInput = document.createElement("input");
+        tempInput.value = link;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand("copy");
+        document.body.removeChild(tempInput);
+        showToast("Invite link copied!", "success");
+      };
+
+      const toggleCardSelection = (card) => {
+        const isSelected = selectedCards.some(c => c.id === card.id);
+        const targetRound = roomState.roundsList[roomState.currentRoundIndex];
+        const isBlind = targetRound === roomState.settings.blindRound;
+        const limit = isBlind ? 3 : 2;
+
+        if (isSelected) {
+          setSelectedCards(selectedCards.filter(c => c.id !== card.id));
+        } else {
+          if (selectedCards.length < limit) {
+            setSelectedCards([...selectedCards, card]);
+          } else {
+            showToast(`You can only select ${limit} cards!`, "error");
+          }
+        }
+      };
+
+      if (!user) {
+        return (
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="flex flex-col items-center space-y-3">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-400"></div>
+              <p className="text-slate-400 font-bold text-sm">Entering Lobby Arena...</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen flex flex-col justify-between">
+          
+          {/* Toast Notification system */}
+          {toast && (
+            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center space-x-2 px-6 py-3 rounded-full shadow-2xl transition-all border font-bold text-sm ${
+              toast.type === 'success' ? 'bg-emerald-500 border-emerald-300 text-slate-950' :
+              toast.type === 'error' ? 'bg-rose-500 border-rose-300 text-white' :
+              'bg-indigo-600 border-indigo-400 text-white'
+            }`}>
+              <span>{toast.message}</span>
+            </div>
+          )}
+
+          {/* LOBBY ENTRY SCREEN */}
+          {(!roomId || !roomState) && (
+            <div className="flex-grow flex flex-col items-center justify-center px-4 py-8 max-w-md mx-auto w-full">
+              <div className="text-center mb-6">
+                <div className="inline-flex p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl border border-emerald-500/20 mb-3">
+                  <Sparkles size={36} />
+                </div>
+                <h1 className="text-3xl font-black bg-gradient-to-r from-amber-400 via-emerald-400 to-amber-400 bg-clip-text text-transparent">JUDGMENT</h1>
+                <p className="text-xs text-slate-400 font-bold tracking-wide mt-1">Single-room multiplayer card game</p>
+              </div>
+
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 shadow-2xl w-full space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] uppercase font-bold text-slate-400">Your Custom Nickname</label>
+                  <input 
+                    type="text" 
+                    maxLength={12}
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    placeholder="Enter nickname..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 text-sm font-semibold"
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <button 
+                    onClick={createRoom}
+                    className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-black py-3.5 rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 text-sm"
+                  >
+                    <Plus size={16} />
+                    <span>Create Room</span>
+                  </button>
+
+                  <div className="relative flex py-1 items-center">
+                    <div className="flex-grow border-t border-slate-800"></div>
+                    <span className="flex-shrink mx-3 text-[10px] font-black text-slate-500 uppercase">Or Join</span>
+                    <div className="flex-grow border-t border-slate-800"></div>
+                  </div>
+
+                  <div className="flex space-x-2">
+                    <input 
+                      type="text" 
+                      id="join-code-input"
+                      maxLength={5}
+                      placeholder="ROOM CODE"
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-center font-black text-sm w-1/2 uppercase focus:outline-none focus:border-amber-500"
+                    />
+                    <button 
+                      onClick={() => joinRoom(document.getElementById('join-code-input').value)}
+                      className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl text-sm transition-all"
+                    >
+                      Join
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ACTIVE ROOM VIEWPORTS */}
+          {roomId && roomState && (
+            <div className="flex-grow flex flex-col justify-between w-full">
+              
+              {/* Top persistent game header */}
+              <div className="bg-emerald-950/40 border-b border-emerald-900/60 px-4 py-3 flex justify-between items-center">
+                <div className="flex items-center space-x-2">
+                  <span className="bg-slate-950/80 px-2.5 py-1 rounded-lg text-xs font-black text-amber-400 border border-slate-800">
+                    ROOM: {roomId}
+                  </span>
+                  <button 
+                    onClick={copyRoomLink}
+                    className="p-1.5 bg-white/5 border border-white/5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-colors flex items-center space-x-1 text-xs font-bold"
+                  >
+                    <Share2 size={12} />
+                    <span>Share</span>
+                  </button>
+                </div>
+
+                {roomState.status !== 'LOBBY' && roomState.status !== 'GAME_OVER' && (
+                  <div className="flex items-center space-x-3">
+                    <span className="text-xs font-black text-white bg-slate-950/60 px-2 py-1 rounded border border-slate-800">
+                      {roomState.roundsList[roomState.currentRoundIndex]} Cards
+                    </span>
+                    <span className={`text-xl font-black ${getSuitStyle(roomState.sirColor)}`}>
+                      Sir: {roomState.sirColor}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* LOBBY / HOST SETTINGS STAGE */}
+              {roomState.status === 'LOBBY' && (
+                <div className="flex-grow max-w-md mx-auto w-full p-4 flex flex-col justify-center space-y-6">
+                  <div className="text-center">
+                    <h2 className="text-xl font-black">Configure Rule Settings</h2>
+                    <p className="text-xs text-slate-400 mt-0.5">Host locks parameters before deal starts</p>
+                  </div>
+
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-4 space-y-4">
+                    {/* Deck Count */}
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-xs font-bold block">Decks Count</span>
+                        <span className="text-[10px] text-slate-400">Total cards multiplies per deck</span>
+                      </div>
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.deckCount <= 1}
+                          onClick={() => updateSettings('deckCount', roomState.settings.deckCount - 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Minus size={14} />
+                        </button>
+                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.deckCount}</span>
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.deckCount >= 3}
+                          onClick={() => updateSettings('deckCount', roomState.settings.deckCount + 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Joker Count */}
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-xs font-bold block">Jokers Included</span>
+                        <span className="text-[10px] text-slate-400">Jokers beat everything</span>
+                      </div>
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.jokerCount <= 0}
+                          onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount - 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Minus size={14} />
+                        </button>
+                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.jokerCount}</span>
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.jokerCount >= 4}
+                          onClick={() => updateSettings('jokerCount', roomState.settings.jokerCount + 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Max round */}
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-xs font-bold block">Max Cards (Peak)</span>
+                        <span className="text-[10px] text-slate-400">Game progressive limit</span>
+                      </div>
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.maxRound <= 3}
+                          onClick={() => updateSettings('maxRound', roomState.settings.maxRound - 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Minus size={14} />
+                        </button>
+                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.maxRound}</span>
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.maxRound >= 13}
+                          onClick={() => updateSettings('maxRound', roomState.settings.maxRound + 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Blind round */}
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-xs font-bold block">Custom Blind Round</span>
+                        <span className="text-[10px] text-slate-400">Cards remain face-down</span>
+                      </div>
+                      <div className="flex items-center space-x-3 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.blindRound <= 1}
+                          onClick={() => updateSettings('blindRound', roomState.settings.blindRound - 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Minus size={14} />
+                        </button>
+                        <span className="text-xs font-bold w-4 text-center">{roomState.settings.blindRound}</span>
+                        <button 
+                          disabled={roomState.hostId !== user.uid || roomState.settings.blindRound >= roomState.settings.maxRound}
+                          onClick={() => updateSettings('blindRound', roomState.settings.blindRound + 1)}
+                          className="text-slate-400 disabled:opacity-30"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Connected players */}
+                  <div className="space-y-2">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block text-center">Connected Players ({roomState.playersOrder.length}/4)</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {roomState.playersOrder.map(pId => {
+                        const isHost = roomState.hostId === pId;
+                        const pData = roomState.players[pId];
+                        return (
+                          <div key={pId} className="p-2.5 bg-slate-950/60 border border-slate-800/60 rounded-xl flex justify-between items-center text-xs font-bold">
+                            <span className="truncate">{pData.name}</span>
+                            {isHost && <span className="bg-amber-400 text-slate-950 text-[9px] px-1.5 py-0.5 rounded-md font-black">HOST</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {roomState.hostId === user.uid ? (
+                    <button 
+                      onClick={startGame}
+                      className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 font-black py-3.5 rounded-xl text-sm shadow-lg flex items-center justify-center space-x-1"
+                    >
+                      <Play size={14} fill="currentColor" />
+                      <span>Start Tournament</span>
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold animate-pulse">
+                      Waiting for host to start deal...
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* DISCARD PHASES (Blind and High count) */}
+              {(roomState.status === 'DISCARDING_BEFORE_BID' || roomState.status === 'DISCARDING_AFTER_BID') && (
+                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
+                  <div className="text-center space-y-1">
+                    <span className="inline-block bg-amber-400/10 text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-amber-400/20 uppercase tracking-widest">
+                      {roomState.status === 'DISCARDING_BEFORE_BID' ? 'Pre-Bid Discard' : 'Post-Bid Discard'}
+                    </span>
+                    <h2 className="text-lg font-black">
+                      {roomState.status === 'DISCARDING_BEFORE_BID' ? 'Discard exactly 2 cards' : 'Discard exactly 3 cards'}
+                    </h2>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      {roomState.status === 'DISCARDING_BEFORE_BID' 
+                        ? 'Strategic round deal active. Ditch unwanted cards before placing bids!' 
+                        : 'You bid blind! Now clean your hand to match the round target size.'}
+                    </p>
+                  </div>
+
+                  {/* Opponent Wait Indicators */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {roomState.playersOrder.map(id => {
+                      const p = roomState.players[id];
+                      return (
+                        <div key={id} className="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800 text-center text-[10px] font-bold">
+                          <span className="truncate block text-slate-300">{p.name}</span>
+                          <span className={`block mt-0.5 ${p.hasDiscarded ? 'text-emerald-400' : 'text-slate-600'}`}>
+                            {p.hasDiscarded ? 'Ready' : 'Wait'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Interactive card selector */}
+                  <div className="space-y-4 flex-1 flex flex-col justify-center">
+                    <span className="text-[10px] uppercase font-black text-center text-slate-400 tracking-wider block">
+                      Select cards to discard ({selectedCards.length} / {roomState.status === 'DISCARDING_BEFORE_BID' ? '2' : '3'})
+                    </span>
+
+                    <div className="flex justify-center items-center overflow-x-auto py-4 px-6 min-h-[140px] custom-scroll">
+                      {roomState.players[user.uid]?.hand.map((card, index) => {
+                        const isSelected = selectedCards.some(c => c.id === card.id);
+                        return (
+                          <div
+                            key={card.id || index}
+                            onClick={() => toggleCardSelection(card)}
+                            className={`w-16 h-24 rounded-xl flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all cursor-pointer bg-white text-slate-950 ${
+                              isSelected 
+                                ? '-translate-y-8 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.5)]' 
+                                : 'border-slate-300 hover:-translate-y-3'
+                            }`}
+                            style={{
+                              marginLeft: index === 0 ? '0px' : '-20px',
+                              zIndex: index,
+                            }}
+                          >
+                            <div className="flex justify-between items-start w-full leading-none">
+                              <span className="text-xs">{card.value}</span>
+                              <span className={`text-sm ${getSuitStyle(card.suit)}`}>{card.suit}</span>
+                            </div>
+                            <div className={`text-2xl self-center ${getSuitStyle(card.suit)}`}>
+                              {card.suit}
+                            </div>
+                            <div className="flex justify-between items-start w-full transform rotate-180 leading-none">
+                              <span className="text-xs">{card.value}</span>
+                              <span className={`text-sm ${getSuitStyle(card.suit)}`}>{card.suit}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <button 
+                      onClick={submitDiscards}
+                      disabled={selectedCards.length !== (roomState.status === 'DISCARDING_BEFORE_BID' ? 2 : 3)}
+                      className="w-full bg-gradient-to-r from-amber-400 to-amber-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 font-black py-3 rounded-xl shadow text-sm transition-all"
+                    >
+                      Confirm Selection
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* BIDDING SELECTION TIMELINE */}
+              {roomState.status === 'BIDDING' && (
+                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
+                  <div className="text-center space-y-1">
+                    <span className="inline-block bg-emerald-500/10 text-emerald-400 text-[10px] font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20 uppercase tracking-widest">
+                      Bidding Phase
+                    </span>
+                    <h2 className="text-lg font-black flex items-center justify-center space-x-1.5">
+                      <span>{roomState.roundsList[roomState.currentRoundIndex] === roomState.settings.blindRound ? 'Blind Prediction' : 'Predict Your Score'}</span>
+                    </h2>
+                  </div>
+
+                  {/* Bids Status Matrix */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {roomState.playersOrder.map(pId => {
+                      const p = roomState.players[pId];
+                      const isTurn = pId === roomState.playersOrder[roomState.currentTurnIndex];
+                      return (
+                        <div key={pId} className={`p-2 rounded-xl border text-center ${isTurn ? 'bg-amber-500/10 border-amber-400 animate-pulse' : 'bg-slate-950/60 border-slate-800'}`}>
+                          <span className="text-[10px] font-bold text-slate-300 block truncate">{p.name}</span>
+                          <span className="text-xs font-black text-amber-300 mt-0.5 block">
+                            {p.currentBid !== null ? `Bid: ${p.currentBid}` : 'Wait'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Interactive Button Panel */}
+                  <div className="flex-1 flex flex-col justify-center items-center bg-black/15 border border-white/5 rounded-2xl p-4">
+                    {roomState.players[user.uid]?.currentBid !== null ? (
+                      <div className="text-center space-y-1">
+                        <span className="text-[10px] uppercase text-slate-500 font-bold block">Locked prediction</span>
+                        <span className="text-3xl font-black text-emerald-400">BID: {roomState.players[user.uid].currentBid}</span>
+                        <span className="text-[10px] text-slate-400 block pt-2">Waiting for matches...</span>
+                      </div>
+                    ) : user.uid === roomState.playersOrder[roomState.currentTurnIndex] ? (
+                      <div className="text-center w-full">
+                        <span className="text-[10px] uppercase font-bold text-amber-400 block mb-3">Choose tricks prediction</span>
+                        <div className="flex flex-wrap justify-center gap-1.5">
+                          {Array.from({ length: roomState.roundsList[roomState.currentRoundIndex] + 1 }, (_, i) => i).map((num) => (
+                            <button
+                              key={num}
+                              onClick={() => submitBid(num)}
+                              className="w-10 h-10 rounded-lg bg-gradient-to-b from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-sm active:scale-95 transition-all"
+                            >
+                              {num}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 font-bold">Waiting for your turn...</p>
+                    )}
+                  </div>
+
+                  {/* Player Hand View */}
+                  <div className="bg-slate-950/60 rounded-2xl p-4 border border-slate-800">
+                    <span className="text-[9px] uppercase font-bold text-slate-400 block text-center mb-2">Your Hand</span>
+                    <div className="flex justify-center items-center overflow-x-auto min-h-[100px] px-6 custom-scroll">
+                      {roomState.players[user.uid]?.hand.map((card, index) => {
+                        const isBlind = roomState.roundsList[roomState.currentRoundIndex] === roomState.settings.blindRound;
+                        return (
+                          <div
+                            key={card.id || index}
+                            className={`w-14 h-20 rounded-lg flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all ${
+                              isBlind 
+                                ? 'bg-gradient-to-br from-indigo-800 to-indigo-950 border-indigo-400/40 justify-center items-center text-indigo-200' 
+                                : 'bg-white text-slate-950 border-slate-200 -translate-y-1 hover:-translate-y-4'
+                            }`}
+                            style={{
+                              marginLeft: index === 0 ? '0px' : '-16px',
+                              zIndex: index,
+                            }}
+                          >
+                            {isBlind ? (
+                              <span className="text-base">🙈</span>
+                            ) : (
+                              <>
+                                <div className="flex justify-between items-start w-full leading-none">
+                                  <span className="text-[10px]">{card.value}</span>
+                                  <span className={`text-xs ${getSuitStyle(card.suit)}`}>{card.suit}</span>
+                                </div>
+                                <div className={`text-xl self-center ${getSuitStyle(card.suit)}`}>
+                                  {card.suit}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* MAIN TRICKS PLAYING SCREEN */}
+              {roomState.status === 'PLAYING' && (
+                <div className="flex-grow p-4 flex flex-col justify-between max-w-md mx-auto w-full space-y-4">
+                  
+                  {/* Scoreboard compact HUD */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {roomState.playersOrder.map(id => {
+                      const p = roomState.players[id];
+                      const isTurn = id === roomState.playersOrder[roomState.currentTurnIndex];
+                      return (
+                        <div key={id} className={`p-1.5 rounded-xl border text-center text-[10px] ${isTurn ? 'bg-amber-500/10 border-amber-400' : 'bg-slate-950/40 border-slate-800'}`}>
+                          <span className="font-bold block truncate text-slate-300">{p.name}</span>
+                          <span className="font-black text-white block mt-0.5">
+                            {p.tricksWon}/{p.currentBid}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Main board felt */}
+                  <div className="flex-1 bg-gradient-to-b from-emerald-900 via-emerald-950 to-emerald-900/60 border border-emerald-800/60 rounded-3xl p-4 flex flex-col justify-between relative min-h-[220px]">
+                    <div className="flex justify-between text-[10px] border-b border-emerald-900 pb-2">
+                      <span className="text-emerald-300">Lead Suit: {roomState.leadSuit ? CARD_SUIT_NAMES[roomState.leadSuit] : 'None'}</span>
+                      <span className="text-amber-400 font-bold">
+                        {roomState.playersOrder[roomState.currentTurnIndex] === user.uid ? 'YOUR TURN' : 'Opponent Turn'}
+                      </span>
+                    </div>
+
+                    {/* Played desk cards */}
+                    <div className="flex justify-center items-center gap-3 my-4">
+                      {roomState.desk && roomState.desk.length > 0 ? (
+                        roomState.desk.map((play, i) => (
+                          <div key={i} className="flex flex-col items-center space-y-1">
+                            <span className="text-[8px] bg-slate-950 px-1.5 rounded">{roomState.players[play.playerId]?.name}</span>
+                            <div className="w-14 h-20 rounded-lg bg-white text-slate-950 p-2 font-bold flex flex-col justify-between border shadow-xl">
+                              <div className="flex justify-between items-start w-full leading-none">
+                                <span className="text-[10px]">{play.card.value}</span>
+                                <span className={`text-xs ${getSuitStyle(play.card.suit)}`}>{play.card.suit}</span>
+                              </div>
+                              <div className={`text-2xl self-center ${getSuitStyle(play.card.suit)}`}>
+                                {play.card.suit}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-[10px] text-emerald-500/50 uppercase tracking-widest text-center py-6">Play a card</div>
+                      )}
+                    </div>
+
+                    {/* Logs ticker */}
+                    <div className="text-[9px] text-slate-400 text-center italic mt-1">
+                      {roomState.roundWinnerLog && roomState.roundWinnerLog.length > 0 
+                        ? `Last trick: ${roomState.roundWinnerLog[roomState.roundWinnerLog.length - 1]}` 
+                        : 'No tricks played yet.'}
+                    </div>
+                  </div>
+
+                  {/* Interactive Hand panel */}
+                  <div className="space-y-2">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block text-center">Your playable hand</span>
+                    <div className="flex justify-center items-center overflow-x-auto min-h-[110px] px-6 custom-scroll">
+                      {roomState.players[user.uid]?.hand.map((card, index) => {
+                        const isMyTurn = roomState.playersOrder[roomState.currentTurnIndex] === user.uid;
+                        const legal = isPlayLegal(card, roomState.players[user.uid].hand, roomState.leadSuit);
+                        return (
+                          <div
+                            key={card.id || index}
+                            onClick={() => {
+                              if (isMyTurn && legal) playCard(card);
+                            }}
+                            className={`w-14 h-20 rounded-lg flex flex-col justify-between p-2 font-bold shadow-2xl transform border transition-all ${
+                              !isMyTurn ? 'bg-slate-300 text-slate-600 border-slate-400 cursor-not-allowed' :
+                              !legal ? 'bg-rose-100 opacity-40 cursor-not-allowed' :
+                              'bg-white text-slate-950 border-slate-200 -translate-y-1 hover:-translate-y-4'
+                            }`}
+                            style={{
+                              marginLeft: index === 0 ? '0px' : '-16px',
+                              zIndex: index,
+                            }}
+                          >
+                            <div className="flex justify-between items-start w-full leading-none">
+                              <span className="text-[10px]">{card.value}</span>
+                              <span className={`text-xs ${getSuitStyle(card.suit)}`}>{card.suit}</span>
+                            </div>
+                            <div className={`text-2xl self-center ${getSuitStyle(card.suit)}`}>
+                              {card.suit}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ROUND SUMMARY SCOREBOARD SCREEN */}
+              {roomState.status === 'ROUND_SUMMARY' && (
+                <div className="flex-grow p-4 flex flex-col justify-center max-w-md mx-auto w-full space-y-6">
+                  <div className="text-center">
+                    <span className="text-[10px] font-black bg-amber-400/10 border border-amber-400/20 text-amber-300 px-3 py-1 rounded-full uppercase">Round Finished</span>
+                    <h2 className="text-xl font-black mt-2">Scoreboard Breakdown</h2>
+                  </div>
+
+                  <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden shadow-xl">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-950 border-b border-slate-800 text-slate-400">
+                          <th className="p-3">Player</th>
+                          <th className="p-3 text-center">Bid</th>
+                          <th className="p-3 text-center">Won</th>
+                          <th className="p-3 text-right">Points</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {roomState.playersOrder.map(id => {
+                          const p = roomState.players[id];
+                          const matched = p.currentBid === p.tricksWon;
+                          return (
+                            <tr key={id} className="border-b border-slate-800/60 font-semibold">
+                              <td className="p-3 font-bold">{p.name}</td>
+                              <td className="p-3 text-center">{p.currentBid}</td>
+                              <td className="p-3 text-center text-emerald-300">{p.tricksWon}</td>
+                              <td className="p-3 text-right font-black text-amber-300">
+                                {p.score} pts {matched && <span className="text-[9px] text-emerald-400 block">+{(10 + p.currentBid)}</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {roomState.hostId === user.uid ? (
+                    <button 
+                      onClick={handleNextRoundProgression}
+                      className="w-full bg-gradient-to-r from-emerald-400 to-teal-500 text-slate-950 font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-1 animate-pulse"
+                    >
+                      <span>Proceed to Next Round</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-emerald-950/20 border border-emerald-900/40 rounded-xl text-center text-xs text-emerald-300 font-bold">
+                      Waiting for host to trigger next deal...
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* GAME OVER TIMELINE */}
+              {roomState.status === 'GAME_OVER' && (
+                <div className="flex-grow p-4 flex flex-col justify-center max-w-md mx-auto w-full space-y-6">
+                  <div className="text-center space-y-2">
+                    <div className="inline-flex p-3 bg-amber-500/10 text-amber-400 rounded-2xl border border-amber-500/20 animate-bounce">
+                      <Trophy size={36} />
+                    </div>
+                    <h2 className="text-2xl font-black bg-gradient-to-r from-amber-400 to-yellow-300 bg-clip-text text-transparent">Tournament Completed!</h2>
+                  </div>
+
+                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3 shadow-xl">
+                    {roomState.playersOrder
+                      .map(id => roomState.players[id])
+                      .sort((a,b) => b.score - a.score)
+                      .map((p, i) => (
+                        <div key={p.id} className="flex justify-between items-center py-2 border-b last:border-b-0 border-slate-800/60">
+                          <span className="font-bold text-sm">#{i+1} {p.name}</span>
+                          <span className="font-black text-amber-300">{p.score} pts</span>
+                        </div>
+                      ))}
+                  </div>
+
+                  {roomState.hostId === user.uid ? (
+                    <button 
+                      onClick={resetEntireGame}
+                      className="w-full bg-slate-800 text-white font-black py-3.5 rounded-xl text-sm flex items-center justify-center space-x-1"
+                    >
+                      <RotateCcw size={14} />
+                      <span>Restart Tournament</span>
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-emerald-950/20 rounded-xl border border-emerald-900/40 text-center text-xs text-emerald-300 font-bold">
+                      Waiting for host to restart another tournament...
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Small copyright marker */}
+              <div className="text-center py-3 text-[9px] text-slate-700 bg-slate-950/40 mt-auto border-t border-slate-900">
+                Judgment Multiplayer Mobile Setup. Hosted via Vercel Serverless.
+              </div>
+
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Initialize DOM Mounting
+    const root = createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
